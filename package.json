@@ -1,0 +1,64 @@
+{
+  "name": "scoop-manager",
+  "version": "1.0.0",
+  "description": "Scoop 的 Web GUI 管理器（Node / Bun 双运行时，可打包为单文件 exe）",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "scoop-manager": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "public",
+    "docs",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "dev:node": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "start:bun": "bun run src/index.ts",
+    "build:exe": "bun run scripts/build-exe.ts",
+    "test": "bun run test:ipc && bun run test:shim",
+    "test:ipc": "bun run scripts/rpc-selftest.ts",
+    "test:shim": "bun run scripts/shim-selftest.ts",
+    "version:set": "bun run scripts/set-version.ts",
+    "desktop:icon": "bun run scripts/make-icon.ts",
+    "desktop:ui": "bun run scripts/build-ui.ts",
+    "desktop:sync": "bun run scripts/sync-sidecar.ts",
+    "desktop:prep": "bun run build:exe && bun run desktop:sync && bun run desktop:ui && bun run desktop:icon",
+    "desktop:dev": "bun run desktop:prep && bun run scripts/tauri.ts dev",
+    "desktop:build": "bun run desktop:prep && bun run scripts/tauri.ts build",
+    "desktop:collect": "bun run scripts/collect-release.ts",
+    "desktop:release": "bun run desktop:build && bun run desktop:collect",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 delete scoop-manager",
+    "pm2:logs": "pm2 logs scoop-manager",
+    "pm2:save": "pm2 save"
+  },
+  "keywords": [
+    "scoop",
+    "windows",
+    "package-manager",
+    "gui",
+    "alpinejs",
+    "bun"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^26.6.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# 测试只需要读仓库内容
+permissions:
+  contents: read
+
+# 同一分支连续推送时取消旧运行，避免排队堆积
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 类型检查 · 传输层自测 · Rust 静态检查
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      # 本项目同时需要两个运行时，缺一不可：
+      #   node —— @tauri-apps/cli 是 node 的 napi 原生模块
+      #   bun  —— build:exe（bun build --compile）以及几乎所有 npm 脚本
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: 缓存 bun 全局缓存
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: 安装依赖
+        run: bun install --frozen-lockfile
+
+      - name: 类型检查
+        run: bun run typecheck
+
+      # IPC 协议自测（源码形态）+ 注入垫片自测，共 42 项断言。
+      # test:ipc 会真的拉起 sidecar 进程并完整走一遍 SSE，是本项目最关键的回归网。
+      - name: 传输层自测
+        run: bun run test
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      # cargo check 之前必须先产出 desktop/ui 与 desktop/icons：
+      # tauri-build 要读图标、generate_context! 要内嵌 frontendDist，
+      # 二者缺失时编译根本无法进行（与本地开发完全一致的前置）。
+      - name: 生成桌面端前置资源
+        run: bun run desktop:prep
+
+      # 这一步专门针对编译产物再跑一遍协议自测。
+      # 它能抓到「exe 打得出来但一启动就崩」这类只在单文件形态下才暴露的问题
+      # —— 历史上 bytecode 与 import.meta 的组合就踩过一次，本地 build:exe 成功、
+      # 双击却直接 SyntaxError。
+      - name: 针对单文件 exe 跑协议自测
+        run: bun run scripts/rpc-selftest.ts dist/scoop-manager.exe
+
+      # 只做静态检查：几十秒内暴露 Rust 侧 API 用法错误，不必等完整打包
+      - name: Rust 静态检查
+        run: cargo check --manifest-path desktop/Cargo.toml --message-format short

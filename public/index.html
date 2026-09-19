@@ -1,0 +1,1410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Scoop 的 Web GUI 管理器 —— 在浏览器中完成检测、搜索、安装、更新与配置管理">
+  <title>Scoop Manager · Web GUI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B0F16'/%3E%3Cpath d='M16 6l9 5v10l-9 5-9-5V11z' fill='none' stroke='%234C8DFF' stroke-width='2'/%3E%3Cpath d='M7 11l9 5 9-5' fill='none' stroke='%237C5CFF' stroke-width='2'/%3E%3C/svg%3E">
+  <!-- __BASE_PATH__ 由服务端按当前部署前缀替换（根路径时为 ''，子路径时为 '/scoop'）。
+       资源用「前缀 + 绝对路径」而不是纯相对路径：否则访问 /scoop（无尾斜杠）时，
+       浏览器会把 css/style.css 解析到 /css/style.css 而绕过代理。
+       这里不可改用 <base href>，它会连带改变 SVG 精灵 #片段引用的解析基准。 -->
+  <link rel="stylesheet" href="__BASE_PATH__/css/style.css">
+  <script src="__BASE_PATH__/js/boot.js"></script>
+  <script defer src="__BASE_PATH__/vendor/alpine.min.js"></script>
+  <script type="module" src="__BASE_PATH__/js/main.js"></script>
+</head>
+<body data-base="__BASE_PATH__" x-data="app" x-init="boot()">
+
+  <!-- ============================ 图标精灵 ============================ -->
+  <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8.5 12 3.5 3 8.5v7L12 20.5l9-5z"/><path d="M3 8.5 12 13.5l9-5"/><path d="M12 13.5v7"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.6-4.6"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h9M19 6h1M4 12h3M13 12h7M4 18h9M19 18h1"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7.5 9.5 3 3-3 3M13 15.5h4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.9-6.4"/><path d="M20.5 4.5v5h-5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.8h5V7M6.5 7l1 13.2h9L18 7"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19.5V5M5.5 11.5 12 5l6.5 6.5"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="9.5" rx="2.5"/><path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7"/></symbol>
+    <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="9.5" rx="2.5"/><path d="M8 10.5V7.8a4 4 0 0 1 7.6-1.6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19.5 7"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.8 2.6 20.2h18.8z"/><path d="M12 10v4.4M12 17.6v.01"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10M19.5 4.5 11 13"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5.5 15.5A1.5 1.5 0 0 1 4 14V5.5A1.5 1.5 0 0 1 5.5 4H14a1.5 1.5 0 0 1 1.5 1.5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9.5 6 6 6-6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11.5M6.5 11 12 16.5 17.5 11M4 20h16"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/><path d="M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4.2L20 8.2 15.8 4 4 15.8z"/><path d="m14 5.8 4.2 4.2"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.01"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/><path d="M10 2.5v4M14 2.5v4M10 17.5v4M14 17.5v4M2.5 10h4M2.5 14h4M17.5 10h4M17.5 14h4"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2.5 2.5 0 0 1 2.5-2.5h3.6l2 2.4h7.4A2.5 2.5 0 0 1 21 9.4v8.1a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10.5 13.5a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M13.5 10.5a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13.5 2.5 4.5 14h6l-1 7.5 9-11.5h-6z"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7.5 3v6c0 4.6-3.2 8-7.5 9.2C7.7 20 4.5 16.6 4.5 12V6z"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6.5h12M9 12h12M9 17.5h12M4 6.5h.01M4 12h.01M4 17.5h.01"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M3 6h4l10 12h4M17 3.5 20.5 6 17 8.5M3 18h4l2.2-2.6M17 15.5l3.5 2.5-3.5 2.5"/></symbol>
+  </svg>
+
+  <div class="app" :class="{ 'nav-open': sidebarOpen, 'nav-collapsed': sidebarCollapsed }">
+
+    <!-- ============================ 侧边导航 ============================ -->
+    <aside class="sidebar" id="app-sidebar">
+      <div class="brand">
+        <span class="brand-mark">
+          <svg class="icon"><use href="#i-box"></use></svg>
+        </span>
+        <span class="brand-text">
+          <strong>Scoop Manager</strong>
+          <small>Web GUI <em x-text="health ? 'v' + health.version : '…'"></em></small>
+        </span>
+      </div>
+
+      <!-- 导航同样等 ready：加载中只保留品牌与「检测中…」状态，避免出现可点却无内容的入口 -->
+      <nav class="nav" x-show="ready" x-cloak>
+        <template x-for="item in navItems" :key="item.id">
+          <button type="button" class="nav-item" :class="{ 'is-active': view === item.id }" @click="setView(item.id)">
+            <svg class="icon"><use :href="'#i-' + item.icon"></use></svg>
+            <span class="nav-label">
+              <strong x-text="item.label"></strong>
+              <small x-text="item.hint"></small>
+            </span>
+            <span class="nav-badge" x-show="item.id === 'installed' && counts && counts.updatable > 0" x-text="counts ? counts.updatable : ''"></span>
+            <span class="nav-badge is-live" x-show="item.id === 'jobs' && running > 0" x-text="running"></span>
+          </button>
+        </template>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="env-chip" :class="env && env.installed ? 'is-ok' : 'is-warn'">
+          <span class="dot"></span>
+          <span x-text="env ? (env.installed ? 'Scoop 就绪' : '未检测到 Scoop') : '检测中…'"></span>
+        </div>
+        <p class="sidebar-path" :title="env && env.root ? env.root : ''" x-text="env && env.root ? env.root : '—'"></p>
+      </div>
+    </aside>
+    <div class="nav-scrim" @click="sidebarOpen = false"></div>
+
+    <!-- ============================ 顶部信息栏 ============================ -->
+    <header class="topbar">
+      <button type="button" class="icon-btn nav-toggle" @click="toggleNav()" :title="navToggleTitle"
+              :aria-expanded="String(!sidebarCollapsed)" aria-controls="app-sidebar">
+        <svg class="icon"><use href="#i-menu"></use></svg>
+      </button>
+
+      <div class="topbar-title">
+        <h1 x-text="(navItems.find(i => i.id === view) || {}).label || 'Scoop Manager'"></h1>
+        <p x-text="(navItems.find(i => i.id === view) || {}).hint || ''"></p>
+      </div>
+
+      <div class="topbar-meta">
+        <span class="pill" :title="health ? health.runtime : ''">
+          <svg class="icon"><use href="#i-cpu"></use></svg>
+          <span x-text="health ? health.kind.toUpperCase() : '—'"></span>
+        </span>
+        <!-- 桌面应用模式（IPC）不监听端口，这里显示模式名而不是 127.0.0.1:0 -->
+        <span class="pill" :title="health && health.transport === 'ipc' ? '桌面模式：不监听任何端口' : '监听端口'">
+          <svg class="icon"><use href="#i-link"></use></svg>
+          <span x-text="health ? (health.transport === 'ipc' ? '桌面模式 · 无端口' : health.server.host + ':' + health.server.port) : '—'"></span>
+        </span>
+        <span class="pill is-muted" x-show="running > 0">
+          <span class="dot is-live"></span>
+          <span x-text="running + ' 个任务执行中'"></span>
+        </span>
+        <button type="button" class="btn btn-ghost" @click="refreshAll()" :disabled="refreshing">
+          <svg class="icon" :class="{ 'is-spinning': refreshing }"><use href="#i-refresh"></use></svg>
+          <span>刷新</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- ============================ 主内容区 ============================ -->
+    <main class="main" id="main-scroll">
+
+      <!-- 首次连接本地服务时的加载态。
+           接口返回之前不应给出任何结论（既不能报错也不能判定平台不支持），
+           因此这两位都用 x-cloak 保证 Alpine 初始化前不可见。 -->
+      <div class="alert alert-info" x-show="booting && !fatal" x-cloak>
+        <svg class="icon is-spinning"><use href="#i-refresh"></use></svg>
+        <div>
+          <strong>正在连接本地服务…</strong>
+          <p>正在读取 Scoop 环境、已安装应用与 Bucket 索引，请稍候。</p>
+        </div>
+      </div>
+
+      <!-- 首次加载的骨架屏：与概览页大致同构，避免「空页面 → 突然铺满」的跳变 -->
+      <div class="loading-layout" x-show="booting && !fatal" x-cloak>
+        <div class="grid grid-6">
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+        </div>
+        <div class="split">
+          <div class="panel">
+            <div class="skeleton-list">
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="skeleton-list">
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="alert alert-danger" x-show="fatal" x-transition.opacity x-cloak>
+        <svg class="icon"><use href="#i-alert"></use></svg>
+        <div>
+          <strong>无法获取本地服务数据</strong>
+          <p x-text="fatal"></p>
+        </div>
+        <button type="button" class="btn btn-ghost" @click="refreshAll()">重试</button>
+      </div>
+
+      <!-- 只在「已确知不支持」时提示：env 尚未返回（null）时保持静默 -->
+      <div class="alert alert-warn" x-show="env && env.supported === false" x-transition.opacity x-cloak>
+        <svg class="icon"><use href="#i-shield"></use></svg>
+        <div>
+          <strong>当前平台不受支持</strong>
+          <p x-text="'Scoop 仅支持 Windows，检测到的平台为 ' + (env ? env.platform : '') + '。界面可以访问，但所有 Scoop 操作都会失败。'"></p>
+        </div>
+      </div>
+
+      <!-- 所有视图统一以 ready 为闸门（内含 !booting && !fatal）：
+           接口没返回之前整块不渲染，否则「一键安装 Scoop」「批量更新」「快捷操作」
+           这类默认按钮与功能区会以假状态出现。x-cloak 保证 Alpine 初始化前也不可见。
+           内部 section 的缩进保持不变，仅在外层加了一层容器。 -->
+      <div class="views" x-show="ready" x-cloak>
+
+      <!-- ===================== 视图 1：环境概览 ===================== -->
+      <section class="view" x-show="view === 'dashboard'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end">
+        <!-- 指标卡占位：env 尚未返回且不是失败态时显示，避免出现一排 0 -->
+        <div class="grid grid-6" x-show="!env && !fatal" x-cloak>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+        </div>
+
+        <div class="panel panel-hero" x-show="env">
+          <div class="hero-main">
+            <div class="hero-status" :class="env && env.installed ? 'is-ok' : 'is-warn'">
+              <svg class="icon"><use :href="env && env.installed ? '#i-check' : '#i-alert'"></use></svg>
+            </div>
+            <div>
+              <h2 x-text="env && env.installed ? 'Scoop 环境正常' : '需要配置 Scoop'"></h2>
+              <p x-text="env && env.installed
+                  ? ('已定位到 ' + env.root + (env.version ? ' · v' + env.version : '') + (env.channel === 'master' ? ' · master 通道' : ''))
+                  : '未在本机检测到可用的 Scoop 安装，请使用一键安装或指定已有路径。'"></p>
+            </div>
+          </div>
+          <div class="hero-actions">
+            <button type="button" class="btn btn-ghost" @click="refreshEnvironment()" :disabled="refreshing">
+              <svg class="icon"><use href="#i-refresh"></use></svg><span>重新检测</span>
+            </button>
+            <button type="button" class="btn btn-ghost" @click="openOnboarding('attach')">
+              <svg class="icon"><use href="#i-folder"></use></svg><span>指定路径</span>
+            </button>
+            <button type="button" class="btn btn-primary" x-show="env && !env.installed" @click="openOnboarding('install')">
+              <svg class="icon"><use href="#i-download"></use></svg><span>一键安装 Scoop</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-6">
+          <template x-for="(card, index) in dashboard.metricCards" :key="card.key">
+            <article class="metric" :class="'tone-' + card.tone" :style="'--stagger:' + (index * 60) + 'ms'">
+              <div class="metric-head">
+                <span class="metric-label" x-text="card.label"></span>
+                <svg class="icon"><use :href="'#i-' + card.icon"></use></svg>
+              </div>
+              <div class="metric-value">
+                <span x-text="card.value"></span>
+                <em x-show="card.unit" x-text="card.unit"></em>
+              </div>
+              <div class="metric-bar"><i></i></div>
+            </article>
+          </template>
+        </div>
+
+        <div class="split">
+          <div class="panel">
+            <header class="panel-head">
+              <h3>环境体检</h3>
+              <span class="pill is-muted" x-show="env && env.powershell" x-text="env ? (env.powershell.executionPolicy ? '执行策略 ' + env.powershell.executionPolicy : '执行策略未知') : ''"></span>
+            </header>
+            <ul class="checks" x-show="env">
+              <template x-for="check in dashboard.healthChecks" :key="check.key">
+                <li class="check" :class="check.ok ? 'is-ok' : 'is-warn'">
+                  <span class="check-mark">
+                    <svg class="icon"><use :href="check.ok ? '#i-check' : '#i-alert'"></use></svg>
+                  </span>
+                  <span class="check-label" x-text="check.label"></span>
+                  <span class="check-value" :class="{ 'is-mono': check.mono }" x-text="check.value"></span>
+                  <button type="button" class="icon-btn is-tiny" x-show="check.copy" @click="copyText(check.copy)" title="复制">
+                    <svg class="icon"><use href="#i-copy"></use></svg>
+                  </button>
+                </li>
+              </template>
+            </ul>
+            <!-- 环境尚未返回时用骨架屏占位，而不是一片空白 -->
+            <div class="skeleton-list" x-show="!env && !fatal" x-cloak>
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+            </div>
+            <p class="hint" x-show="env && env.issues && env.issues.length">
+              <template x-for="issue in (env ? env.issues : [])" :key="issue">
+                <span class="hint-line" x-text="'• ' + issue"></span>
+              </template>
+            </p>
+          </div>
+
+          <div class="panel">
+            <header class="panel-head">
+              <h3>快捷操作</h3>
+            </header>
+            <div class="quick-grid">
+              <button type="button" class="quick" @click="dashboard.checkup()">
+                <svg class="icon"><use href="#i-shield"></use></svg>
+                <strong>环境体检</strong>
+                <small>scoop checkup</small>
+              </button>
+              <button type="button" class="quick" @click="dashboard.updateBucket()">
+                <svg class="icon"><use href="#i-refresh"></use></svg>
+                <strong>更新 Bucket</strong>
+                <small>拉取最新清单</small>
+              </button>
+              <button type="button" class="quick" @click="dashboard.selfUpdate()">
+                <svg class="icon"><use href="#i-arrow-up"></use></svg>
+                <strong>更新 Scoop</strong>
+                <small>升级自身与 bucket</small>
+              </button>
+              <button type="button" class="quick" @click="dashboard.exportScoopfile()">
+                <svg class="icon"><use href="#i-download"></use></svg>
+                <strong>导出 Scoopfile</strong>
+                <small>备份已安装应用</small>
+              </button>
+              <button type="button" class="quick" @click="dashboard.cleanupOldVersions()">
+                <svg class="icon"><use href="#i-list"></use></svg>
+                <strong>清理旧版本</strong>
+                <small>scoop cleanup</small>
+              </button>
+              <button type="button" class="quick" @click="dashboard.clearCache()">
+                <svg class="icon"><use href="#i-database"></use></svg>
+                <strong>清空缓存</strong>
+                <small x-text="dashboard.cacheSizeLabel"></small>
+              </button>
+            </div>
+            <div class="quick-note" x-show="dashboard.cache">
+              <span>缓存目录</span>
+              <code x-text="dashboard.cache ? dashboard.cache.path : ''"></code>
+              <span x-text="dashboard.cache ? (dashboard.cache.totalEntries + ' 个条目') : ''"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <header class="panel-head">
+            <h3>可用更新 <em class="count" x-text="updates.length"></em></h3>
+            <button type="button" class="btn btn-primary is-small" x-show="updates.length" @click="dashboard.updateAll()">
+              <svg class="icon"><use href="#i-arrow-up"></use></svg><span>全部更新</span>
+            </button>
+          </header>
+          <p class="hint" x-show="booting && !fatal" x-cloak>正在读取可用更新…</p>
+          <p class="hint" x-show="!booting || fatal" x-text="updatesNote"></p>
+          <div class="empty" x-show="!booting && env && updates.length === 0" x-cloak>
+            <svg class="icon"><use href="#i-check"></use></svg>
+            <p>所有应用都是最新版本。若刚添加过 bucket，可先执行一次「更新 Bucket」以获取最新清单。</p>
+          </div>
+          <ul class="update-list" x-show="updates.length">
+            <template x-for="item in updates" :key="item.name + (item.global ? '-g' : '')">
+              <li>
+                <span class="app-name" x-text="item.name"></span>
+                <span class="version from" x-text="item.installed"></span>
+                <svg class="icon arrow"><use href="#i-arrow-up"></use></svg>
+                <span class="version to" x-text="item.available"></span>
+                <span class="tag" x-text="item.bucket || '—'"></span>
+                <span class="tag is-warn" x-show="item.hold" title="该应用处于锁定状态，scoop 不会更新它">已锁定</span>
+                <button type="button" class="btn btn-ghost is-small" @click="dashboard.updateOne(item.name, item.global)">
+                  <svg class="icon"><use href="#i-arrow-up"></use></svg><span>更新</span>
+                </button>
+              </li>
+            </template>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ===================== 视图 2：已安装应用 ===================== -->
+      <section class="view" x-show="view === 'installed'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end">
+        <div class="toolbar">
+          <label class="field field-search">
+            <svg class="icon"><use href="#i-search"></use></svg>
+            <input type="search" placeholder="搜索已安装应用…" x-model="installed.query">
+          </label>
+          <div class="segmented">
+            <button type="button" :class="{ 'is-active': installed.scope === 'all' }" @click="installed.scope = 'all'">
+              <span>全部</span><em x-text="installed.items.length"></em>
+            </button>
+            <button type="button" :class="{ 'is-active': installed.scope === 'user' }" @click="installed.scope = 'user'">
+              <span>用户</span><em x-text="installed.userCount"></em>
+            </button>
+            <button type="button" :class="{ 'is-active': installed.scope === 'global' }" @click="installed.scope = 'global'">
+              <span>全局</span><em x-text="installed.globalCount"></em>
+            </button>
+          </div>
+          <div class="field field-inline" x-data="selectField(() => installed.sortOptions, installed, 'sort')">
+            <span>排序</span>
+            <div class="select">
+              <button type="button" class="select-trigger" @click="toggle()" @keydown="onKeydown($event)" :aria-expanded="open" aria-haspopup="listbox">
+                <span x-text="label"></span>
+                <svg class="icon"><use href="#i-chevron"></use></svg>
+              </button>
+            </div>
+            <ul class="select-menu" x-show="open" x-cloak role="listbox" @click.outside="open = false">
+              <template x-for="(option, index) in options" :key="option.value">
+                <li role="option" :aria-selected="option.value === value" :class="{ 'is-selected': option.value === value, 'is-highlighted': index === highlighted }" @click="choose(option)" @mouseenter="highlighted = index" x-text="option.label"></li>
+              </template>
+            </ul>
+          </div>
+          <!-- 可更新是与「用户/全局」正交的维度，因此做成独立开关而非分段项 -->
+          <button type="button" class="btn btn-ghost is-small" :class="{ 'is-on': installed.onlyUpdatable }"
+                  @click="installed.onlyUpdatable = !installed.onlyUpdatable"
+                  :title="installed.onlyUpdatable ? '显示全部已安装应用' : '只显示有新版本的应用'">
+            <svg class="icon"><use href="#i-arrow-up"></use></svg>
+            <span>只看可更新</span>
+            <em class="count" x-text="installed.updatableCount"></em>
+          </button>
+          <button type="button" class="btn btn-ghost" @click="installed.load(true)" :disabled="installed.loading">
+            <svg class="icon" :class="{ 'is-spinning': installed.loading }"><use href="#i-refresh"></use></svg>
+            <span>重新扫描</span>
+          </button>
+        </div>
+
+        <div class="batchbar" x-show="installed.selected.length > 0" x-transition>
+          <span>已选择 <strong x-text="installed.selectedInView.length"></strong> 个应用</span>
+          <div class="batchbar-actions">
+            <button type="button" class="btn btn-ghost is-small" @click="installed.batchUpdate()" :disabled="installed.batchBusy">
+              <svg class="icon"><use href="#i-arrow-up"></use></svg><span>批量更新</span>
+            </button>
+            <button type="button" class="btn btn-danger is-small" @click="installed.batchUninstall()" :disabled="installed.batchBusy">
+              <svg class="icon"><use href="#i-trash"></use></svg><span>批量卸载</span>
+            </button>
+            <button type="button" class="btn btn-ghost is-small" @click="installed.clearSelection()">取消选择</button>
+          </div>
+        </div>
+
+        <div class="panel panel-table">
+          <!-- 扫描中显示骨架，不要出现「还没有已安装的应用」这种假空态 -->
+          <div class="skeleton-list is-padded" x-show="installed.loading && installed.items.length === 0" x-cloak>
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-line"></div>
+          </div>
+
+          <div class="empty" x-show="!installed.loading && installed.filtered.length === 0">
+            <svg class="icon"><use href="#i-box"></use></svg>
+            <p x-text="installed.items.length === 0 ? '还没有已安装的应用，去「搜索与安装」看看吧。' : (installed.onlyUpdatable && installed.updatableCount === 0 ? '当前没有可更新的应用，全部已是最新版本。' : '没有符合当前筛选条件的应用。')"></p>
+            <button type="button" class="btn btn-ghost is-small" x-show="installed.hasActiveFilter" @click="installed.clearFilters()">
+              <svg class="icon"><use href="#i-x"></use></svg><span>清空筛选</span>
+            </button>
+          </div>
+
+          <table class="table is-apps" x-show="installed.filtered.length > 0">
+            <thead>
+              <tr>
+                <th class="col-check">
+                  <label class="checkbox">
+                    <input type="checkbox" :checked="installed.allSelected" @change="installed.toggleSelectAll()">
+                    <span></span>
+                  </label>
+                </th>
+                <th>应用</th>
+                <th class="col-version">版本</th>
+                <th class="col-bucket">来源</th>
+                <th class="col-time">最近更新</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="app in installed.filtered" :key="app.name + (app.global ? '-g' : '')">
+                <tr :class="{ 'is-selected': installed.isSelected(app.name) }">
+                  <td class="col-check">
+                    <label class="checkbox">
+                      <input type="checkbox" :checked="installed.isSelected(app.name)" @change="installed.toggleSelect(app.name)">
+                      <span></span>
+                    </label>
+                  </td>
+                  <td>
+                    <button type="button" class="app-cell" @click="installed.openDetail(app)">
+                      <span class="app-avatar" x-text="app.name.slice(0, 2).toUpperCase()"></span>
+                      <span class="app-meta">
+                        <span class="app-title">
+                          <strong x-text="app.name"></strong>
+                          <span class="tag is-global" x-show="app.global">全局</span>
+                          <span class="tag is-warn" x-show="app.hold">已锁定</span>
+                          <span class="tag is-up" x-show="installed.updatableNames.has(app.name)">可更新</span>
+                        </span>
+                        <small x-text="app.description || '暂无描述'"></small>
+                      </span>
+                    </button>
+                  </td>
+                  <td class="col-version"><code x-text="app.version"></code></td>
+                  <td class="col-bucket"><span class="tag" x-text="app.bucket || '—'"></span></td>
+                  <td class="col-time" :title="installed.absolute(app.updatedAt)" x-text="installed.relative(app.updatedAt)"></td>
+                  <td class="col-actions">
+                    <button type="button" class="icon-btn" title="更新" @click="installed.update(app)">
+                      <svg class="icon"><use href="#i-arrow-up"></use></svg>
+                    </button>
+                    <button type="button" class="icon-btn" :title="app.hold ? '解除锁定' : '锁定（禁止更新）'" @click="installed.toggleHold(app)">
+                      <svg class="icon"><use :href="app.hold ? '#i-unlock' : '#i-lock'"></use></svg>
+                    </button>
+                    <button type="button" class="icon-btn" title="重置（修复 shim）" @click="installed.reset(app)">
+                      <svg class="icon"><use href="#i-shuffle"></use></svg>
+                    </button>
+                    <button type="button" class="icon-btn is-danger" title="卸载" @click="installed.uninstall(app)">
+                      <svg class="icon"><use href="#i-trash"></use></svg>
+                    </button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===================== 视图 3：搜索与安装 ===================== -->
+      <section class="view" x-show="view === 'discover'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end">
+        <div class="panel panel-search">
+          <div class="searchbar">
+            <svg class="icon"><use href="#i-search"></use></svg>
+            <input id="discover-input" type="search" placeholder="输入应用名或关键词，例如 7zip / nodejs / ffmpeg…"
+                   x-model="discover.query" @input.debounce.300ms="discover.search()">
+            <button type="button" class="icon-btn" x-show="discover.query" @click="discover.clearQuery()" title="清空">
+              <svg class="icon"><use href="#i-x"></use></svg>
+            </button>
+          </div>
+          <div class="searchbar-meta">
+            <div class="field field-inline" x-data="selectField(() => discover.bucketOptions, discover, 'bucket')" @change="discover.query.trim() && discover.search()">
+              <span>来源 Bucket</span>
+              <div class="select">
+                <button type="button" class="select-trigger" @click="toggle()" @keydown="onKeydown($event)" :aria-expanded="open" aria-haspopup="listbox">
+                  <span x-text="label"></span>
+                  <svg class="icon"><use href="#i-chevron"></use></svg>
+                </button>
+              </div>
+              <ul class="select-menu" x-show="open" x-cloak role="listbox" @click.outside="open = false">
+                <template x-for="(option, index) in options" :key="option.value">
+                  <li role="option" :aria-selected="option.value === value" :class="{ 'is-selected': option.value === value, 'is-highlighted': index === highlighted }" @click="choose(option)" @mouseenter="highlighted = index" x-text="option.label"></li>
+                </template>
+              </ul>
+            </div>
+            <span class="pill is-muted" x-show="discover.searched">
+              <span x-text="discover.total + ' 条结果'"></span>
+              <span x-show="discover.took">· <span x-text="discover.took + 'ms'"></span></span>
+            </span>
+            <span class="pill is-muted" x-show="discover.indexStats">
+              索引 <span x-text="discover.indexStats ? discover.indexStats.entries.toLocaleString('zh-CN') : 0"></span> 项
+              <span x-show="discover.indexStats && discover.indexStats.took"> · 构建 <span x-text="discover.indexStats ? discover.indexStats.took : 0"></span>ms</span>
+            </span>
+            <button type="button" class="btn btn-ghost is-small" @click="discover.refreshIndex()" :disabled="discover.refreshingIndex">
+              <svg class="icon" :class="{ 'is-spinning': discover.refreshingIndex }"><use href="#i-refresh"></use></svg>
+              <span>重建索引</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="empty is-large" x-show="discover.emptyReason === 'no-index'">
+          <svg class="icon"><use href="#i-layers"></use></svg>
+          <h3>还没有可搜索的应用清单</h3>
+          <p>搜索基于本地 Bucket 中的 manifest 文件。请先添加至少一个 Bucket。</p>
+          <button type="button" class="btn btn-primary" @click="discover.goBuckets()">
+            <svg class="icon"><use href="#i-plus"></use></svg><span>去添加 Bucket</span>
+          </button>
+        </div>
+
+        <div class="empty is-large" x-show="discover.emptyReason === 'idle'">
+          <svg class="icon"><use href="#i-search"></use></svg>
+          <h3>开始搜索</h3>
+          <p>索引已就绪，共 <span x-text="discover.indexStats ? discover.indexStats.entries.toLocaleString('zh-CN') : 0"></span> 个应用。输入关键词即可即时过滤，无需联网。</p>
+        </div>
+
+        <div class="empty is-large" x-show="discover.emptyReason === 'no-result'">
+          <svg class="icon"><use href="#i-alert"></use></svg>
+          <h3>没有匹配的应用</h3>
+          <p>试试更短的关键词，或先「更新 Bucket」以获取最新清单。</p>
+        </div>
+
+        <div class="panel panel-table" x-show="discover.results.length > 0">
+          <ul class="result-list">
+            <template x-for="app in discover.results" :key="app.name + '@' + app.bucket">
+              <li class="result">
+                <span class="app-avatar" x-text="app.name.slice(0, 2).toUpperCase()"></span>
+                <div class="result-main">
+                  <div class="result-title">
+                    <strong x-text="app.name"></strong>
+                    <span class="version" x-text="app.version || '—'"></span>
+                    <span class="tag" x-text="app.bucket"></span>
+                    <span class="tag is-muted" x-show="app.license" x-text="app.license"></span>
+                  </div>
+                  <p x-text="app.description || '暂无描述'"></p>
+                  <div class="result-extra">
+                    <a class="link" x-show="app.homepage" :href="app.homepage" target="_blank" rel="noopener noreferrer">
+                      <svg class="icon"><use href="#i-external"></use></svg>
+                      <span x-text="app.homepage"></span>
+                    </a>
+                    <span class="pill is-muted" x-show="app.depends && app.depends.length">
+                      依赖 <span x-text="app.depends.length"></span> 项
+                    </span>
+                  </div>
+                </div>
+                <button type="button" class="btn btn-primary is-small" @click="discover.openInstallPanel(app)">
+                  <svg class="icon"><use href="#i-download"></use></svg><span>安装</span>
+                </button>
+              </li>
+            </template>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ===================== 视图 4：Bucket 管理 ===================== -->
+      <section class="view" x-show="view === 'buckets'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end">
+        <div class="toolbar">
+          <div class="toolbar-title">
+            <h2>已添加的 Bucket <em class="count" x-text="buckets.items.length"></em></h2>
+            <p>
+              共 <span x-text="buckets.totalManifests.toLocaleString('zh-CN')"></span> 个应用清单
+              <template x-if="buckets.indexStats">
+                <span> · 索引 <span x-text="buckets.indexStats ? buckets.indexStats.entries.toLocaleString('zh-CN') : 0"></span> 项</span>
+              </template>
+            </p>
+          </div>
+          <button type="button" class="btn btn-ghost" @click="buckets.updateAll()">
+            <svg class="icon"><use href="#i-refresh"></use></svg><span>更新全部</span>
+          </button>
+          <button type="button" class="btn btn-primary" @click="buckets.openForm()">
+            <svg class="icon"><use href="#i-plus"></use></svg><span>添加 Bucket</span>
+          </button>
+        </div>
+
+        <div class="panel panel-table">
+          <div class="empty" x-show="buckets.items.length === 0 && !buckets.loading">
+            <svg class="icon"><use href="#i-layers"></use></svg>
+            <p>还没有添加任何 Bucket。可以从下方推荐列表一键添加官方仓库。</p>
+          </div>
+          <table class="table" x-show="buckets.items.length > 0">
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>仓库来源</th>
+                <th class="col-num">清单数</th>
+                <th class="col-time">最近更新</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="item in buckets.items" :key="item.name">
+                <tr>
+                  <td>
+                    <div class="bucket-name">
+                      <span class="app-avatar is-square" x-text="item.name.slice(0, 1).toUpperCase()"></span>
+                      <strong x-text="item.name"></strong>
+                      <span class="tag is-ok" x-show="item.official">官方</span>
+                    </div>
+                  </td>
+                  <td>
+                    <a class="link is-truncate" x-show="item.source" :href="item.source" target="_blank" rel="noopener noreferrer" x-text="item.source"></a>
+                    <span x-show="!item.source" class="muted">未知（非 git 仓库）</span>
+                  </td>
+                  <td class="col-num"><code x-text="item.manifestCount.toLocaleString('zh-CN')"></code></td>
+                  <td class="col-time" x-text="buckets.relative(item.updatedAt)"></td>
+                  <td class="col-actions">
+                    <button type="button" class="icon-btn" title="搜索该 Bucket" @click="buckets.searchInBucket(item.name)">
+                      <svg class="icon"><use href="#i-search"></use></svg>
+                    </button>
+                    <button type="button" class="icon-btn" title="更新" @click="buckets.update(item)" :disabled="buckets.busy === item.name">
+                      <svg class="icon" :class="{ 'is-spinning': buckets.busy === item.name }"><use href="#i-refresh"></use></svg>
+                    </button>
+                    <button type="button" class="icon-btn is-danger" title="删除" @click="buckets.remove(item)" :disabled="buckets.busy === item.name">
+                      <svg class="icon"><use href="#i-trash"></use></svg>
+                    </button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="panel" x-show="buckets.notAdded.length > 0">
+          <header class="panel-head">
+            <h3>推荐的已知 Bucket</h3>
+            <span class="pill is-muted" x-text="buckets.knownSource === 'scoop' ? '来自 scoop bucket known' : '内置列表（无法执行 scoop 命令）'"></span>
+          </header>
+          <div class="known-grid">
+            <template x-for="item in buckets.notAdded" :key="item.name">
+              <button type="button" class="known" @click="buckets.quickAdd(item)" :disabled="buckets.busy === item.name">
+                <span class="known-name">
+                  <strong x-text="item.name"></strong>
+                  <span class="tag is-ok" x-show="item.official">官方</span>
+                </span>
+                <span class="known-action">
+                  <svg class="icon" :class="{ 'is-spinning': buckets.busy === item.name }"><use href="#i-plus"></use></svg>
+                  <span>添加</span>
+                </span>
+              </button>
+            </template>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== 视图 5：配置与代理 ===================== -->
+      <section class="view" x-show="view === 'config'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end">
+        <div class="panel panel-proxy">
+          <header class="panel-head">
+            <h3>代理设置</h3>
+            <span class="pill" :class="config.proxyMode === 'none' ? 'is-muted' : 'is-ok'"
+                  x-text="config.proxyMode === 'custom' ? '自定义代理' : config.proxyMode === 'system' ? '跟随系统代理' : '未启用'"></span>
+            <span class="pill is-muted" x-show="config.proxySource === 'manager'"
+                  title="Scoop 尚未安装，代理保存在本程序自身配置中，安装 Scoop 时生效">来源：本程序</span>
+            <span class="pill is-muted" x-show="config.proxySource === 'scoop'"
+                  title="来自 scoop config（scoop config proxy）">来源：scoop config</span>
+          </header>
+
+          <!-- Scoop 未安装时的说明：这一步 scoop config 还不可用，
+               必须讲清楚代理存到哪、会怎么用，否则用户会以为没生效 -->
+          <div class="alert alert-warn" x-show="env && !env.installed">
+            <svg class="icon"><use href="#i-alert"></use></svg>
+            <div>
+              <strong>Scoop 尚未安装，代理将保存到本程序</strong>
+              <p>
+                当前无法使用 <code>scoop config proxy</code>（Scoop 还不存在）。此处设置的代理会保存到本程序自身配置，
+                并在「安装 Scoop」时自动用于下载安装脚本与 bucket；安装成功后会自动同步进 scoop config。
+                全程不会修改 Windows 系统代理设置或 git 全局配置。
+              </p>
+            </div>
+          </div>
+
+          <div class="proxy-body">
+            <div class="proxy-current">
+              <span class="label">当前值</span>
+              <code x-text="config.proxyDisplay || '（未设置）'"></code>
+              <button type="button" class="icon-btn is-tiny" x-show="config.proxyInput" @click="copyText(config.proxyInput)" title="复制">
+                <svg class="icon"><use href="#i-copy"></use></svg>
+              </button>
+            </div>
+
+            <div class="proxy-form" :class="{ 'is-invalid': config.proxyEditing && !config.proxyValid }">
+              <input type="text" placeholder="127.0.0.1:7890 或 http://user:pass@host:port"
+                     x-model="config.proxyInput" @input="config.proxyEditing = true">
+              <button type="button" class="btn btn-primary" @click="config.applyProxy()" :disabled="config.busy === 'proxy'">保存</button>
+              <button type="button" class="btn btn-ghost" @click="config.useSystemProxy()" :disabled="config.busy === 'proxy'">跟随系统</button>
+              <button type="button" class="btn btn-ghost" @click="config.clearProxy()" :disabled="config.busy === 'proxy'">清除</button>
+              <button type="button" class="btn btn-ghost" @click="config.testProxy()" :disabled="config.proxyTest.running">
+                <svg class="icon" :class="{ 'is-spinning': config.proxyTest.running }"><use href="#i-zap"></use></svg>
+                <span>测试连通性</span>
+              </button>
+            </div>
+            <p class="form-error" x-show="config.proxyEditing && !config.proxyValid">
+              格式不合法。可填写 host:port、http://user:pass@host:port，或使用内置关键字 current / none。
+            </p>
+
+            <div class="proxy-result" x-show="config.proxyTest.done"
+                 :class="config.proxyTest.ok ? 'is-ok' : 'is-warn'">
+              <svg class="icon"><use :href="config.proxyTest.ok ? '#i-check' : '#i-alert'"></use></svg>
+              <div>
+                <strong x-text="config.proxyTest.ok ? ('连通正常（' + config.proxyTest.ms + 'ms）') : ('测试未通过：' + (config.proxyTest.error || '未知原因'))"></strong>
+                <p x-text="config.proxyTest.hint"></p>
+                <p class="muted" x-show="config.proxyTest.target" x-text="'目标：' + config.proxyTest.target + '（仅做 TCP 握手探测，不发送业务数据）'"></p>
+              </div>
+            </div>
+            <p class="hint" x-show="config.proxyTest.done && config.proxyTest.hint && !config.proxyTest.target" x-text="config.proxyTest.hint"></p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <header class="panel-head">
+            <h3>常用配置</h3>
+            <span class="pill is-muted">一键切换 / 填充</span>
+          </header>
+          <div class="key-grid">
+            <template x-for="meta in config.keys" :key="meta.key">
+              <div class="key-card" :class="{ 'is-on': config.entryOf(meta.key) }">
+                <div class="key-card-head">
+                  <code x-text="meta.key"></code>
+                  <span class="tag is-ok is-tiny" x-show="config.entryOf(meta.key)">已设置</span>
+                </div>
+                <strong x-text="meta.label"></strong>
+                <p x-text="meta.description"></p>
+                <div class="key-card-foot">
+                  <template x-if="meta.type === 'boolean'">
+                    <button type="button" class="switch" :class="{ 'is-on': config.isTruthy(meta) }" @click="config.toggleMeta(meta)">
+                      <span></span>
+                    </button>
+                  </template>
+                  <span class="key-value" x-show="config.entryOf(meta.key) && meta.type !== 'boolean'"
+                        x-text="config.entryOf(meta.key) ? config.displayValue(config.entryOf(meta.key)) : ''"></span>
+                  <button type="button" class="btn btn-ghost is-tiny" @click="config.quickFill(meta)">
+                    <svg class="icon"><use href="#i-plus"></use></svg><span>设置</span>
+                  </button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="panel panel-table">
+          <header class="panel-head">
+            <h3>全部配置项 <em class="count" x-text="config.entries.length"></em></h3>
+            <div class="panel-head-actions">
+              <span class="pill is-muted" :title="config.snapshot ? config.snapshot.file : ''"
+                    x-text="config.snapshot ? (config.snapshot.exists ? '配置文件已存在' : '配置文件尚未创建') : ''"></span>
+              <span class="pill is-warn" x-show="config.snapshot && !config.snapshot.writable">不可写</span>
+              <button type="button" class="btn btn-ghost is-small" @click="config.load()" :disabled="config.loading">
+                <svg class="icon" :class="{ 'is-spinning': config.loading }"><use href="#i-refresh"></use></svg><span>刷新</span>
+              </button>
+              <button type="button" class="btn btn-primary is-small" @click="config.openAdd()">
+                <svg class="icon"><use href="#i-plus"></use></svg><span>新增配置</span>
+              </button>
+            </div>
+          </header>
+
+          <p class="hint" x-show="config.snapshot" x-text="config.snapshot ? ('配置文件：' + config.snapshot.file) : ''"></p>
+          <p class="hint is-warn" x-show="config.snapshot && config.snapshot.notes && config.snapshot.notes.length">
+            <template x-for="note in (config.snapshot ? config.snapshot.notes : [])" :key="note">
+              <span class="hint-line" x-text="'• ' + note"></span>
+            </template>
+          </p>
+
+          <div class="empty" x-show="config.snapshot && config.entries.length === 0">
+            <svg class="icon"><use href="#i-sliders"></use></svg>
+            <p>当前没有任何自定义配置，Scoop 全部使用默认行为。</p>
+          </div>
+
+          <table class="table" x-show="config.entries.length > 0">
+            <thead>
+              <tr>
+                <th class="col-key">配置项</th>
+                <th>值</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="entry in config.entries" :key="entry.key">
+                <tr>
+                  <td class="col-key"><code x-text="entry.key"></code></td>
+                  <td>
+                    <span class="config-value" :class="{ 'is-masked': entry.sensitive && !config.reveal[entry.key] }"
+                          x-text="config.displayValue(entry)"></span>
+                  </td>
+                  <td class="col-actions">
+                    <button type="button" class="icon-btn" x-show="entry.sensitive" :title="config.reveal[entry.key] ? '隐藏' : '显示'"
+                            @click="config.toggleReveal(entry.key)">
+                      <svg class="icon"><use href="#i-eye"></use></svg>
+                    </button>
+                    <button type="button" class="icon-btn" title="编辑" @click="config.openEdit(entry)">
+                      <svg class="icon"><use href="#i-edit"></use></svg>
+                    </button>
+                    <button type="button" class="icon-btn is-danger" title="删除" @click="config.removeKey(entry.key)" :disabled="config.busy === entry.key">
+                      <svg class="icon"><use href="#i-trash"></use></svg>
+                    </button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===================== 视图 6：任务与日志 ===================== -->
+      <section class="view view-jobs" x-show="view === 'jobs'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end">
+        <div class="jobs-layout">
+          <div class="panel panel-jobs">
+            <header class="panel-head">
+              <h3>任务 <em class="count" x-text="jobs.filtered.length"></em></h3>
+              <div class="panel-head-actions">
+                <div class="field field-inline is-compact" x-data="selectField(() => jobs.statusOptions, jobs, 'filterStatus')" @change="jobs.load()">
+                  <div class="select">
+                    <button type="button" class="select-trigger" @click="toggle()" @keydown="onKeydown($event)" :aria-expanded="open" aria-haspopup="listbox">
+                      <span x-text="label"></span>
+                      <svg class="icon"><use href="#i-chevron"></use></svg>
+                    </button>
+                  </div>
+                  <ul class="select-menu" x-show="open" x-cloak role="listbox" @click.outside="open = false">
+                    <template x-for="(option, index) in options" :key="option.value">
+                      <li role="option" :aria-selected="option.value === value" :class="{ 'is-selected': option.value === value, 'is-highlighted': index === highlighted }" @click="choose(option)" @mouseenter="highlighted = index" x-text="option.label"></li>
+                    </template>
+                  </ul>
+                </div>
+                <button type="button" class="btn btn-ghost is-tiny" @click="jobs.clearFinished()" :disabled="jobs.clearing">
+                  <svg class="icon"><use href="#i-trash"></use></svg><span>清理历史</span>
+                </button>
+              </div>
+            </header>
+
+            <div class="empty" x-show="!jobs.loading && jobs.filtered.length === 0">
+              <svg class="icon"><use href="#i-terminal"></use></svg>
+              <p>暂无任务记录。执行安装、更新、卸载等操作后，这里会显示实时日志。</p>
+            </div>
+
+            <ul class="job-list">
+              <template x-for="job in jobs.filtered" :key="job.id">
+                <li class="job" :class="[ 'tone-' + jobs.statusMeta(job.status).tone, { 'is-active': jobs.activeId === job.id } ]"
+                    @click="jobs.select(job.id)">
+                  <div class="job-head">
+                    <span class="job-status" x-text="jobs.statusMeta(job.status).label"></span>
+                    <strong x-text="job.title"></strong>
+                    <span class="job-kind" x-text="jobs.kindLabel(job.kind)"></span>
+                  </div>
+                  <div class="job-meta">
+                    <span x-text="jobs.time(job.createdAt)"></span>
+                    <span>·</span>
+                    <span x-text="'耗时 ' + jobs.durationOf(job)"></span>
+                    <span x-show="job.exitCode !== null && job.exitCode !== undefined">·</span>
+                    <span x-show="job.exitCode !== null && job.exitCode !== undefined" x-text="'退出码 ' + job.exitCode"></span>
+                    <span class="job-target" x-show="job.target" x-text="job.target"></span>
+                  </div>
+                  <p class="job-error" x-show="job.error && job.error.message" x-text="job.error ? job.error.message : ''"></p>
+                  <div class="job-actions" @click.stop>
+                    <button type="button" class="icon-btn is-tiny" x-show="job.canCancel" title="取消"
+                            @click="jobs.cancel(job.id)" :disabled="jobs.cancelling">
+                      <svg class="icon"><use href="#i-stop"></use></svg>
+                    </button>
+                    <button type="button" class="icon-btn is-tiny" x-show="jobs.canRetry(job) && (job.status === 'failed' || job.status === 'timeout' || job.status === 'canceled')"
+                            title="重试" @click="jobs.retry(job)">
+                      <svg class="icon"><use href="#i-refresh"></use></svg>
+                    </button>
+                    <button type="button" class="icon-btn is-tiny is-danger" title="删除记录" @click="jobs.removeOne(job.id)">
+                      <svg class="icon"><use href="#i-x"></use></svg>
+                    </button>
+                  </div>
+                </li>
+              </template>
+            </ul>
+          </div>
+
+          <div class="panel panel-log">
+            <header class="panel-head">
+              <h3 x-text="jobs.activeJob ? jobs.activeJob.title : '实时日志'"></h3>
+              <div class="panel-head-actions">
+                <span class="stream-state" :class="'is-' + jobs.streamState" :title="'SSE 连接状态：' + jobs.streamState">
+                  <span class="dot"></span>
+                  <span x-text="jobs.streamState === 'open' ? '已连接' : jobs.streamState === 'reconnecting' ? '重连中' : jobs.streamState === 'connecting' ? '连接中' : '未连接'"></span>
+                </span>
+                <button type="button" class="btn btn-ghost is-tiny" @click="jobs.toggleAutoScroll()"
+                        :class="{ 'is-on': jobs.autoScroll }" title="自动滚动到最新">
+                  <svg class="icon"><use href="#i-arrow-up"></use></svg><span>自动滚动</span>
+                </button>
+                <button type="button" class="btn btn-ghost is-tiny" @click="jobs.copyLogs()" :disabled="jobs.logs.length === 0">
+                  <svg class="icon"><use href="#i-copy"></use></svg><span>复制</span>
+                </button>
+                <button type="button" class="btn btn-ghost is-tiny" @click="jobs.downloadLogs()" :disabled="jobs.logs.length === 0">
+                  <svg class="icon"><use href="#i-download"></use></svg><span>下载</span>
+                </button>
+                <button type="button" class="icon-btn is-tiny" title="清空视图" @click="jobs.clearLogView()">
+                  <svg class="icon"><use href="#i-trash"></use></svg>
+                </button>
+              </div>
+            </header>
+
+            <div class="job-summary" x-show="jobs.activeJob">
+              <span class="tag" :class="'tone-' + jobs.statusMeta(jobs.activeJob ? jobs.activeJob.status : 'queued').tone"
+                    x-text="jobs.activeJob ? jobs.statusMeta(jobs.activeJob.status).label : ''"></span>
+              <span x-text="jobs.activeJob ? ('开始于 ' + jobs.time(jobs.activeJob.startedAt)) : ''"></span>
+              <span class="muted" x-show="jobs.activeJob && jobs.activeJob.canCancel">· 可取消</span>
+              <span class="muted" x-show="jobs.truncated">· 更早的日志已超出缓冲上限被丢弃</span>
+            </div>
+
+            <div class="terminal" id="job-log-viewport">
+              <div class="empty is-terminal" x-show="jobs.logs.length === 0">
+                <svg class="icon"><use href="#i-terminal"></use></svg>
+                <p x-text="jobs.activeId ? '等待输出…' : '从左侧选择一个任务查看日志，或执行一次操作。'"></p>
+              </div>
+              <template x-for="(line, index) in jobs.visibleLogs" :key="index">
+                <div class="log-line" :class="'is-' + line.stream">
+                  <span class="log-ts" x-text="jobs.clock(line.ts)"></span>
+                  <span class="log-stream" x-text="line.stream"></span>
+                  <span class="log-text" x-text="line.text"></span>
+                </div>
+              </template>
+            </div>
+
+            <div class="job-error-block" x-show="jobs.detail && jobs.detail.error">
+              <svg class="icon"><use href="#i-alert"></use></svg>
+              <div>
+                <strong x-text="jobs.detail && jobs.detail.error ? jobs.detail.error.message : ''"></strong>
+                <pre x-show="jobs.detail && jobs.detail.error && jobs.detail.error.detail"
+                     x-text="jobs.detail && jobs.detail.error && jobs.detail.error.detail ? JSON.stringify(jobs.detail.error.detail, null, 2) : ''"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      </div>
+      <!-- /.views -->
+    </main>
+
+    <!-- ============================ 底部状态条 ============================ -->
+    <footer class="statusbar">
+      <span class="status-item is-path">
+        <svg class="icon"><use href="#i-folder"></use></svg>
+        <span class="is-truncate" x-text="env && env.root ? env.root : '未定位 Scoop'"></span>
+      </span>
+      <span class="status-sep"></span>
+      <span class="status-item is-counts" x-show="counts">
+        <svg class="icon"><use href="#i-box"></use></svg>
+        <span x-text="counts ? (counts.installed + ' 个应用 · ' + counts.buckets + ' 个 bucket') : ''"></span>
+      </span>
+      <span class="status-sep" x-show="counts"></span>
+      <span class="status-item is-jobs">
+        <svg class="icon"><use href="#i-terminal"></use></svg>
+        <span x-text="running > 0 ? (running + ' 个任务执行中' + (queued > 0 ? '，' + queued + ' 个排队' : '')) : '空闲'"></span>
+      </span>
+
+      <span class="status-spacer"></span>
+
+      <span class="status-item is-muted" x-show="lastRefreshAt">
+        <span x-text="'数据更新于 ' + new Date(lastRefreshAt || Date.now()).toLocaleTimeString('zh-CN')"></span>
+      </span>
+      <span class="status-item">
+        <span class="stream-state" :class="'is-' + jobStreamState">
+          <span class="dot"></span>
+          <span x-text="jobStreamState === 'open' ? '日志流已连接' : jobStreamState === 'reconnecting' ? '日志流重连中' : '日志流空闲'"></span>
+        </span>
+      </span>
+      <span class="status-item is-muted" x-show="health">
+        <span x-text="health ? health.runtime : ''"></span>
+      </span>
+    </footer>
+  </div>
+
+  <!-- ============================ Toast ============================ -->
+  <div class="toasts">
+    <template x-for="toast in toasts" :key="toast.id">
+      <div class="toast" :class="'tone-' + toast.tone" x-transition>
+        <svg class="icon">
+          <use :href="toast.tone === 'success' ? '#i-check' : toast.tone === 'danger' ? '#i-alert' : toast.tone === 'warn' ? '#i-alert' : '#i-info'"></use>
+        </svg>
+        <p x-text="toast.message"></p>
+        <button type="button" class="icon-btn is-tiny" @click="dismissToast(toast.id)">
+          <svg class="icon"><use href="#i-x"></use></svg>
+        </button>
+      </div>
+    </template>
+  </div>
+
+  <!-- ============================ 确认弹层 ============================ -->
+  <div class="layer" x-show="confirm.open" x-transition.opacity @click.self="settleConfirm(false)" x-cloak>
+    <div class="modal" x-show="confirm.open" x-transition.scale.90>
+      <header class="modal-head">
+        <span class="modal-icon" :class="confirm.danger ? 'is-danger' : 'is-info'">
+          <svg class="icon"><use :href="confirm.danger ? '#i-alert' : '#i-info'"></use></svg>
+        </span>
+        <h3 x-text="confirm.title"></h3>
+      </header>
+      <div class="modal-body">
+        <p x-text="confirm.message"></p>
+        <p class="muted" x-show="confirm.detail" x-text="confirm.detail"></p>
+      </div>
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" @click="settleConfirm(false)">取消</button>
+        <button type="button" class="btn" :class="confirm.danger ? 'btn-danger' : 'btn-primary'" @click="settleConfirm(true)"
+                x-text="confirm.confirmText"></button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============================ 首次引导 ============================ -->
+  <div class="layer is-blur" x-show="onboarding.open" x-transition.opacity x-cloak>
+    <div class="onboard" x-show="onboarding.open" x-transition.scale.95>
+      <div class="onboard-head">
+        <span class="brand-mark is-large">
+          <svg class="icon"><use href="#i-box"></use></svg>
+        </span>
+        <div>
+          <h2>欢迎使用 Scoop Manager</h2>
+          <p>未在本机检测到可用的 Scoop 安装。请选择一种方式完成接入。</p>
+        </div>
+      </div>
+
+      <div class="tabs">
+        <button type="button" :class="{ 'is-active': onboarding.tab === 'install' }" @click="onboarding.tab = 'install'">
+          <svg class="icon"><use href="#i-download"></use></svg><span>一键安装</span>
+        </button>
+        <button type="button" :class="{ 'is-active': onboarding.tab === 'attach' }" @click="onboarding.tab = 'attach'">
+          <svg class="icon"><use href="#i-folder"></use></svg><span>指定已有路径</span>
+        </button>
+      </div>
+
+      <div class="onboard-body">
+        <div x-show="onboarding.tab === 'install'">
+          <p class="onboard-desc">
+            将调用官方安装脚本（get.scoop.sh）把 Scoop 安装到指定目录。整个过程会实时输出日志，安装完成后自动刷新环境。
+          </p>
+          <label class="field-block">
+            <span>安装目录</span>
+            <input type="text" x-model="onboarding.installDir" placeholder="例如 C:\scoop">
+            <small>留空则安装到默认目录 %USERPROFILE%\scoop。目录无需预先创建。</small>
+          </label>
+
+          <!-- 这是唯一能影响「安装 Scoop」这一步的代理入口：
+               此时 scoop config 还不存在，只能把值交给安装任务注入进程环境。 -->
+          <label class="field-block">
+            <span>代理（可选，强烈建议国内网络填写）</span>
+            <input type="text" x-model="onboarding.proxy" placeholder="127.0.0.1:7890">
+            <small>
+              安装脚本需要从 get.scoop.sh 与 GitHub 下载。代理仅用于本次安装（注入子进程环境），
+              不会修改 Windows 系统代理或 git 全局配置；安装成功后会自动同步到 scoop config。
+            </small>
+          </label>
+          <div class="toolbar" style="margin: -8px 0 12px">
+            <button type="button" class="btn btn-ghost is-small" @click="testOnboardingProxy()"
+                    :disabled="onboarding.proxyTest.running">
+              <svg class="icon" :class="{ 'is-spinning': onboarding.proxyTest.running }"><use href="#i-zap"></use></svg>
+              <span>测试代理连通性</span>
+            </button>
+            <span class="tag" :class="onboarding.proxyTest.ok ? 'is-ok' : 'is-danger'" x-show="onboarding.proxyTest.done"
+                  x-text="onboarding.proxyTest.ok ? ('可用（' + onboarding.proxyTest.ms + 'ms）') : (onboarding.proxyTest.error || '不可用')"></span>
+          </div>
+          <p class="hint" x-show="onboarding.proxyTest.done && onboarding.proxyTest.hint"
+             x-text="onboarding.proxyTest.hint"></p>
+          <p class="hint is-warn" x-show="!onboarding.proxy.trim()">
+            <span class="hint-line">未填写代理，将直连 get.scoop.sh 与 GitHub，国内网络很可能超时。若下载失败，可回到这里填好代理重试。</span>
+          </p>
+          <label class="checkbox-row">
+            <label class="checkbox">
+              <input type="checkbox" x-model="onboarding.runAsAdmin">
+              <span></span>
+            </label>
+            <span>以管理员身份安装（安装到 C:\ProgramData 等受保护位置时需要；会弹出 UAC 提示）</span>
+          </label>
+          <button type="button" class="btn btn-primary is-block" @click="submitOnboardingInstall()" :disabled="onboarding.busy">
+            <svg class="icon" :class="{ 'is-spinning': onboarding.busy }"><use href="#i-download"></use></svg>
+            <span x-text="onboarding.busy ? '正在执行…' : '开始安装'"></span>
+          </button>
+        </div>
+
+        <div x-show="onboarding.tab === 'attach'">
+          <p class="onboard-desc">
+            如果 Scoop 已经安装在其他位置（例如 D:\scoop），直接填写该根目录即可接入。程序会校验目录下是否存在 apps 子目录与 scoop.ps1。
+          </p>
+          <label class="field-block">
+            <span>Scoop 根目录</span>
+            <input type="text" x-model="onboarding.attachDir" placeholder="例如 D:\scoop">
+            <small>注意填写的是根目录，不是 apps 或 shims 目录。</small>
+          </label>
+          <button type="button" class="btn btn-primary is-block" @click="submitOnboardingAttach()" :disabled="onboarding.busy">
+            <svg class="icon" :class="{ 'is-spinning': onboarding.busy }"><use href="#i-check"></use></svg>
+            <span x-text="onboarding.busy ? '正在校验…' : '接入该路径'"></span>
+          </button>
+        </div>
+
+        <p class="form-error" x-show="onboarding.error" x-text="onboarding.error"></p>
+      </div>
+
+      <footer class="onboard-foot">
+        <button type="button" class="btn btn-ghost" @click="dismissOnboarding()">稍后再说（仅浏览界面）</button>
+        <button type="button" class="btn btn-ghost" @click="refreshEnvironment()">重新检测</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============================ 应用详情抽屉 ============================ -->
+  <div class="drawer-layer" x-show="installed.detail.open" @click.self="installed.closeDetail()" x-cloak
+       x-transition:enter="drawer-fade" x-transition:enter-start="drawer-fade-out" x-transition:enter-end="drawer-fade-in"
+       x-transition:leave="drawer-fade" x-transition:leave-start="drawer-fade-in" x-transition:leave-end="drawer-fade-out">
+    <aside class="drawer" x-show="installed.detail.open" x-cloak
+           x-transition:enter="drawer-slide" x-transition:enter-start="drawer-slide-out" x-transition:enter-end="drawer-slide-in"
+           x-transition:leave="drawer-slide" x-transition:leave-start="drawer-slide-in" x-transition:leave-end="drawer-slide-out">
+      <header class="drawer-head">
+        <div>
+          <h3 x-text="installed.detail.name"></h3>
+          <p x-text="installed.detail.app ? (installed.detail.app.bucket ? '来源 ' + installed.detail.app.bucket : '未知来源') : ''"></p>
+        </div>
+        <button type="button" class="icon-btn" @click="installed.closeDetail()">
+          <svg class="icon"><use href="#i-x"></use></svg>
+        </button>
+      </header>
+
+      <div class="drawer-body" x-show="installed.detail.app">
+        <div class="detail-grid" x-show="installed.detail.app">
+          <div class="detail-item">
+            <span>已安装版本</span>
+            <strong x-text="installed.detail.app ? installed.detail.app.version : ''"></strong>
+          </div>
+          <div class="detail-item">
+            <span>安装范围</span>
+            <strong x-text="installed.detail.app && installed.detail.app.global ? '全局' : '当前用户'"></strong>
+          </div>
+          <div class="detail-item">
+            <span>架构</span>
+            <strong x-text="installed.detail.app && installed.detail.app.architecture ? installed.detail.app.architecture : '—'"></strong>
+          </div>
+          <div class="detail-item">
+            <span>锁定状态</span>
+            <strong x-text="installed.detail.app && installed.detail.app.hold ? '已锁定' : '未锁定'"></strong>
+          </div>
+        </div>
+
+        <p class="detail-desc" x-text="installed.detail.app && installed.detail.app.description ? installed.detail.app.description : '暂无描述'"></p>
+
+        <div class="detail-block">
+          <h4>安装路径</h4>
+          <div class="copy-row">
+            <code x-text="installed.detail.app ? installed.detail.app.path : ''"></code>
+            <button type="button" class="icon-btn is-tiny" @click="installed.detail.app && copyText(installed.detail.app.path)" title="复制">
+              <svg class="icon"><use href="#i-copy"></use></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="detail-block" x-show="installed.detail.app && installed.detail.app.shims && installed.detail.app.shims.length">
+          <h4>命令（shims）</h4>
+          <div class="tag-row">
+            <template x-for="shim in (installed.detail.app ? installed.detail.app.shims : [])" :key="shim">
+              <code class="tag is-mono" x-text="shim"></code>
+            </template>
+          </div>
+        </div>
+
+        <div class="detail-block" x-show="installed.detail.available.length > 0">
+          <h4>仓库中的版本</h4>
+          <ul class="mini-list">
+            <template x-for="entry in installed.detail.available" :key="entry.bucket">
+              <li>
+                <span class="tag" x-text="entry.bucket"></span>
+                <code x-text="entry.version || '—'"></code>
+                <span class="tag is-up" x-show="installed.detail.app && entry.version !== installed.detail.app.version">有更新</span>
+              </li>
+            </template>
+          </ul>
+        </div>
+
+        <div class="detail-block" x-show="installed.detail.manifest">
+          <h4>
+            原始 manifest
+            <button type="button" class="btn btn-ghost is-tiny" @click="installed.detail.showRaw = !installed.detail.showRaw">
+              <svg class="icon"><use href="#i-chevron"></use></svg>
+              <span x-text="installed.detail.showRaw ? '收起' : '展开'"></span>
+            </button>
+          </h4>
+          <pre class="code-block" x-show="installed.detail.showRaw" x-text="installed.detailJson"></pre>
+        </div>
+
+        <p class="form-error" x-show="installed.detail.error" x-text="installed.detail.error"></p>
+      </div>
+
+      <footer class="drawer-foot" x-show="installed.detail.app">
+        <button type="button" class="btn btn-ghost" @click="installed.toggleHold(installed.detail.app)">
+          <svg class="icon"><use :href="installed.detail.app && installed.detail.app.hold ? '#i-unlock' : '#i-lock'"></use></svg>
+          <span x-text="installed.detail.app && installed.detail.app.hold ? '解除锁定' : '锁定'"></span>
+        </button>
+        <button type="button" class="btn btn-primary" @click="installed.update(installed.detail.app)">
+          <svg class="icon"><use href="#i-arrow-up"></use></svg><span>更新</span>
+        </button>
+        <button type="button" class="btn btn-danger" @click="installed.uninstall(installed.detail.app)">
+          <svg class="icon"><use href="#i-trash"></use></svg><span>卸载</span>
+        </button>
+      </footer>
+    </aside>
+  </div>
+
+  <!-- ============================ 安装选项抽屉 ============================ -->
+  <div class="drawer-layer" x-show="discover.panel.open" @click.self="discover.closeInstallPanel()" x-cloak
+       x-transition:enter="drawer-fade" x-transition:enter-start="drawer-fade-out" x-transition:enter-end="drawer-fade-in"
+       x-transition:leave="drawer-fade" x-transition:leave-start="drawer-fade-in" x-transition:leave-end="drawer-fade-out">
+    <aside class="drawer" x-show="discover.panel.open" x-cloak
+           x-transition:enter="drawer-slide" x-transition:enter-start="drawer-slide-out" x-transition:enter-end="drawer-slide-in"
+           x-transition:leave="drawer-slide" x-transition:leave-start="drawer-slide-in" x-transition:leave-end="drawer-slide-out">
+      <header class="drawer-head">
+        <div>
+          <h3>安装 <span x-text="discover.panel.app ? discover.panel.app.name : ''"></span></h3>
+          <p>
+            版本 <span x-text="discover.panel.app ? (discover.panel.app.version || '—') : ''"></span>
+            · 来源 <span x-text="discover.panel.app ? discover.panel.app.bucket : ''"></span>
+          </p>
+        </div>
+        <button type="button" class="icon-btn" @click="discover.closeInstallPanel()">
+          <svg class="icon"><use href="#i-x"></use></svg>
+        </button>
+      </header>
+
+      <div class="drawer-body">
+        <p class="detail-desc" x-text="discover.panel.app ? (discover.panel.app.description || '暂无描述') : ''"></p>
+
+        <div class="detail-block">
+          <h4>安装选项</h4>
+          <label class="checkbox-row">
+            <label class="checkbox"><input type="checkbox" x-model="discover.panel.options.global"><span></span></label>
+            <span>全局安装 <code>-g</code> —— 安装到 SCOOP_GLOBAL，需要管理员权限</span>
+          </label>
+          <label class="checkbox-row">
+            <label class="checkbox"><input type="checkbox" x-model="discover.panel.options.independent"><span></span></label>
+            <span>独立安装 <code>-i</code> —— 不依赖其他应用的共享依赖</span>
+          </label>
+          <label class="checkbox-row">
+            <label class="checkbox"><input type="checkbox" x-model="discover.panel.options.skipHash"><span></span></label>
+            <span>跳过哈希校验 <code>-s</code> —— 有一定安全风险，仅在哈希失效时使用</span>
+          </label>
+          <label class="checkbox-row">
+            <label class="checkbox"><input type="checkbox" x-model="discover.panel.options.noCache"><span></span></label>
+            <span>不使用缓存 <code>-n</code> —— 强制重新下载</span>
+          </label>
+          <div class="field-block" x-data="selectField(() => discover.archOptions, discover.panel.options, 'arch')">
+            <span>指定架构 <code>-a</code></span>
+            <div class="select">
+              <button type="button" class="select-trigger" @click="toggle()" @keydown="onKeydown($event)" :aria-expanded="open" aria-haspopup="listbox">
+                <span x-text="label"></span>
+                <svg class="icon"><use href="#i-chevron"></use></svg>
+              </button>
+            </div>
+            <ul class="select-menu" x-show="open" x-cloak role="listbox" @click.outside="open = false">
+              <template x-for="(option, index) in options" :key="option.value">
+                <li role="option" :aria-selected="option.value === value" :class="{ 'is-selected': option.value === value, 'is-highlighted': index === highlighted }" @click="choose(option)" @mouseenter="highlighted = index" x-text="option.label"></li>
+              </template>
+            </ul>
+          </div>
+        </div>
+
+        <div class="detail-block">
+          <h4>依赖预览</h4>
+          <p class="muted" x-show="discover.panel.depsLoading">正在解析依赖…</p>
+          <p class="muted" x-show="!discover.panel.depsLoading && discover.panel.deps.length === 0">该应用没有声明依赖。</p>
+          <ul class="mini-list" x-show="discover.panel.deps.length > 0">
+            <template x-for="dep in discover.panel.deps" :key="dep.name">
+              <li>
+                <span class="app-avatar is-tiny" x-text="dep.name.slice(0, 2).toUpperCase()"></span>
+                <strong x-text="dep.name"></strong>
+                <code x-text="dep.version || '—'"></code>
+                <span class="tag" x-show="dep.bucket" x-text="dep.bucket"></span>
+                <span class="tag is-ok" x-show="dep.installed">已安装</span>
+                <span class="tag is-danger" x-show="dep.missing">未找到清单</span>
+              </li>
+            </template>
+          </ul>
+          <p class="hint is-warn" x-show="discover.missingDeps.length > 0">
+            有依赖在本地 bucket 中找不到清单，可能是缺少对应的 Bucket，安装可能失败。
+          </p>
+        </div>
+
+        <div class="detail-block">
+          <h4>将执行的命令</h4>
+          <code class="command-preview">scoop install<span x-text="discover.panel.options.global ? ' -g' : ''"></span><span x-text="discover.panel.options.independent ? ' -i' : ''"></span><span x-text="discover.panel.options.skipHash ? ' -s' : ''"></span><span x-text="discover.panel.options.noCache ? ' -n' : ''"></span><span x-text="discover.panel.options.arch ? ' -a ' + discover.panel.options.arch : ''"></span> <span x-text="discover.panel.app ? discover.panel.app.name : ''"></span></code>
+        </div>
+
+        <p class="form-error" x-show="discover.panel.error" x-text="discover.panel.error"></p>
+      </div>
+
+      <footer class="drawer-foot">
+        <button type="button" class="btn btn-ghost" @click="discover.closeInstallPanel()">取消</button>
+        <button type="button" class="btn btn-primary" @click="discover.confirmInstall()">
+          <svg class="icon"><use href="#i-download"></use></svg><span>确认安装</span>
+        </button>
+      </footer>
+    </aside>
+  </div>
+
+  <!-- ============================ 配置编辑弹层 ============================ -->
+  <div class="layer" x-show="config.edit.open" x-transition.opacity @click.self="config.closeEdit()" x-cloak>
+    <div class="modal" x-show="config.edit.open" x-transition.scale.90>
+      <header class="modal-head">
+        <span class="modal-icon is-info"><svg class="icon"><use href="#i-edit"></use></svg></span>
+        <h3>修改配置 <code x-text="config.edit.key"></code></h3>
+      </header>
+      <div class="modal-body">
+        <label class="field-block">
+          <span>值</span>
+          <input type="text" x-model="config.edit.value" placeholder="输入新值">
+          <small>布尔值请填 true / false，数字直接填数字。</small>
+        </label>
+        <p class="form-error" x-show="config.edit.error" x-text="config.edit.error"></p>
+      </div>
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" @click="config.closeEdit()">取消</button>
+        <button type="button" class="btn btn-primary" @click="config.submitEdit()" :disabled="config.edit.submitting">保存</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============================ 新增配置弹层 ============================ -->
+  <div class="layer" x-show="config.add.open" x-transition.opacity @click.self="config.closeAdd()" x-cloak>
+    <div class="modal" x-show="config.add.open" x-transition.scale.90>
+      <header class="modal-head">
+        <span class="modal-icon is-info"><svg class="icon"><use href="#i-plus"></use></svg></span>
+        <h3>新增配置项</h3>
+      </header>
+      <div class="modal-body">
+        <label class="field-block">
+          <span>键名</span>
+          <input type="text" x-model="config.add.key" placeholder="例如 aria2-split">
+        </label>
+        <label class="field-block">
+          <span>值</span>
+          <input type="text" x-model="config.add.value" placeholder="例如 5">
+        </label>
+        <div class="tag-row" x-show="config.keysNotSet.length > 0">
+          <span class="muted">常用键：</span>
+          <template x-for="meta in config.keysNotSet.slice(0, 8)" :key="meta.key">
+            <button type="button" class="chip" @click="config.add.key = meta.key; config.add.value = meta.suggestion || ''" x-text="meta.key"></button>
+          </template>
+        </div>
+        <p class="form-error" x-show="config.add.error" x-text="config.add.error"></p>
+      </div>
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" @click="config.closeAdd()">取消</button>
+        <button type="button" class="btn btn-primary" @click="config.submitAdd()" :disabled="config.add.submitting">保存</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============================ Bucket 添加弹层 ============================ -->
+  <div class="layer" x-show="buckets.form.open" x-transition.opacity @click.self="buckets.closeForm()" x-cloak>
+    <div class="modal" x-show="buckets.form.open" x-transition.scale.90>
+      <header class="modal-head">
+        <span class="modal-icon is-info"><svg class="icon"><use href="#i-layers"></use></svg></span>
+        <h3>添加 Bucket</h3>
+      </header>
+      <div class="modal-body">
+        <label class="field-block">
+          <span>名称 <em>*</em></span>
+          <input type="text" x-model="buckets.form.name" placeholder="例如 extras" @input="buckets.form.error = ''">
+        </label>
+        <label class="field-block">
+          <span>仓库地址（可选）</span>
+          <input type="text" x-model="buckets.form.repoUrl" placeholder="https://github.com/ScoopInstaller/Extras" @input="buckets.form.error = ''">
+          <small>留空则使用 Scoop 内置的已知仓库映射（推荐先试留空）。</small>
+        </label>
+        <p class="form-error" x-show="buckets.form.error" x-text="buckets.form.error"></p>
+      </div>
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" @click="buckets.closeForm()">取消</button>
+        <button type="button" class="btn btn-primary" @click="buckets.submitAdd()" :disabled="buckets.form.submitting">添加</button>
+      </footer>
+    </div>
+  </div>
+
+</body>
+</html>

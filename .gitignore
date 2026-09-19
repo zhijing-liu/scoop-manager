@@ -1,0 +1,25 @@
+node_modules/
+dist/
+build/
+logs/
+*.exe
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# 包管理器统一为 bun（CI 用 bun install --frozen-lockfile）。
+# pnpm 的锁文件保留在本地但不入库：两个锁文件并存会让 Tauri CLI 报
+# "Only one package manager should be used"，也容易让 CI 选错。
+pnpm-lock.yaml
+.scoop-manager/
+.scoop-manager-desktop/
+
+# 桌面端分发产物（安装包由 desktop:release 收拢到这里）
+release/
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.tsbuildinfo

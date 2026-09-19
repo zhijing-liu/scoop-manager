@@ -1,0 +1,11 @@
+# Rust 构建产物
+/target
+
+# 由 scripts/build-ui.ts 从 public/ 生成，不入库
+/ui
+
+# 由 scripts/sync-sidecar.ts 从 dist/scoop-manager.exe 生成，不入库
+/binaries
+
+# Tauri 自动生成的权限 schema
+/gen

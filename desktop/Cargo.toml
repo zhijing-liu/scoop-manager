@@ -1,0 +1,42 @@
+[package]
+name = "scoop-manager-desktop"
+version = "1.0.0"
+description = "Scoop Manager 桌面端外壳（零端口 IPC）"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "scoop_manager_desktop_lib"
+# 只保留 rlib。
+#
+# Tauri 官方模板写的是 ["staticlib", "cdylib", "rlib"]，那三个类型是为了让同一份
+# 代码也能编到 iOS / Android（移动端需要 staticlib / cdylib）。本项目是纯 Windows
+# 桌面应用，桌面二进制只链接 rlib，多出来的 cdylib 只会让 MSVC 链接器多产出一个
+# 无人使用的 .dll / .dll.lib / .exp，并在 Rust 1.9x 的 linker_messages 提示下
+# 刷出一行"正在创建库 ..."的 warning，白占构建时间也容易让人误判为出错。
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 只用到 oneshot（请求/响应配对）与 sleep（就绪轮询）
+tokio = { version = "1", features = ["sync", "time"] }
+
+[profile.release]
+# 刻意不追求极致体积：最终安装包 90% 的体积来自 86 MB 的 sidecar，外壳本身只有
+# 约 4 MB，再怎么压也就省下 1～2 MB，代价却是每次构建多花好几分钟。
+#   - lto = true（fat LTO）每次都会对整棵依赖树重算一遍，且无法增量缓存，
+#     是 release 构建耗时的主要来源。thin 快一个数量级，体积只差约 5%。
+#   - codegen-units = 1 同理，收益在这个体量下可以忽略。
+lto = "thin"
+opt-level = "s"
+panic = "abort"
+strip = true

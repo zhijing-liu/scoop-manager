@@ -1,0 +1,175 @@
+name: Release
+
+# 两种触发方式：
+#   - 推送 v* 形式的 tag：构建 + 发布 GitHub Release
+#   - 手动触发（workflow_dispatch）：只构建并上传 artifact，不发 Release，
+#     方便在打 tag 前先验证一份可安装的包
+#
+# 用法：
+#   git tag v1.0.0 && git push <remote> v1.0.0
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（不含 v 前缀，例如 1.0.1）。留空则沿用仓库中的当前版本'
+        required: false
+        default: ''
+
+# 创建 Release 与上传资产需要写权限
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建单文件 exe 与桌面安装包
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: 解析版本号
+        id: version
+        shell: pwsh
+        run: |
+          $ref = "${{ github.ref_name }}"
+          $manual = "${{ inputs.version }}"
+
+          if ($manual)      { $version = $manual -replace '^v', '' }
+          elseif ($ref -like 'v*') { $version = $ref -replace '^v', '' }
+          else              { $version = '' }
+
+          if ($version) {
+            Add-Content -Path $env:GITHUB_ENV    -Value "APP_VERSION=$version"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "value=$version"
+            Write-Host "版本号：$version"
+          } else {
+            Write-Host "未指定版本号，沿用仓库中的当前版本"
+          }
+
+      # 版本散落在 package.json / config.ts / tauri.conf.json / Cargo.toml 四处，
+      # 不同步会出现「安装包叫 1.2.0、界面显示 1.0.0」这类不一致
+      - name: 同步版本号
+        if: env.APP_VERSION != ''
+        run: bun run version:set ${{ env.APP_VERSION }}
+
+      - name: 安装依赖
+        run: bun install --frozen-lockfile
+
+      # 打包前先跑传输层自测：宁可在这里失败，也不要产出一个装上去打不开的包
+      - name: 传输层自测
+        run: bun run test
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: 构建（sidecar → 界面资源 → 图标 → NSIS 安装包 → 收拢到 release/）
+        run: bun run desktop:release
+
+      - name: 校验产物
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem "release/*setup.exe" -ErrorAction SilentlyContinue)
+          $portable  = @(Get-ChildItem "release/*portable*.exe" -ErrorAction SilentlyContinue)
+
+          if ($installer.Count -ne 1) {
+            Write-Error "release/ 下应恰好有一个 NSIS 安装包，实际 $($installer.Count) 个"
+            exit 1
+          }
+          if ($portable.Count -ne 1) {
+            Write-Error "release/ 下应恰好有一个单文件 exe，实际 $($portable.Count) 个"
+            exit 1
+          }
+
+          # 安装包必须同时含外壳与 sidecar，否则装完会弹「未找到内置的本地服务程序」。
+          # 7-Zip 在 GitHub 的 Windows 镜像里通常自带；缺失时降级为体积粗检。
+          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if ($sevenZip) {
+            $listing = & $sevenZip l $installer[0].FullName
+            foreach ($required in @('scoop-manager-desktop.exe', 'scoop-manager.exe')) {
+              if (-not ($listing -match [regex]::Escape($required))) {
+                Write-Error "安装包内缺少 $required —— externalBin 没有打进包"
+                exit 1
+              }
+            }
+            Write-Host "✅ 安装包内容校验通过（外壳 + sidecar 均在包内）"
+          } elseif ($installer[0].Length -lt 20MB) {
+            Write-Error "未找到 7z，且安装包仅 $([math]::Round($installer[0].Length / 1MB, 1)) MB，疑似未打入 sidecar"
+            exit 1
+          } else {
+            Write-Host "ℹ️ 未找到 7z，已用体积粗检（>= 20 MB）代替内容校验"
+          }
+
+          Get-ChildItem "release/*.exe" | ForEach-Object {
+            Write-Host ("产物: {0}（{1:N1} MB）" -f $_.Name, ($_.Length / 1MB))
+          }
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: scoop-manager-${{ env.APP_VERSION || 'dev' }}
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 发布 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+
+          # 按提交记录自动生成变更说明，并把 #数字 引用转成显式链接
+          $notes = (gh api "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" -f tag_name=$tag |
+            ConvertFrom-Json).body
+          $notes = $notes -replace '#(\d+)', "[PR #`$1](https://github.com/$env:GITHUB_REPOSITORY/pull/`$1)"
+
+          $buildInfo = @(
+            '',
+            '---',
+            '',
+            '**Assets / 下载说明**',
+            '',
+            '| 文件 | 说明 |',
+            '| --- | --- |',
+            '| `Scoop Manager_*_x64-setup.exe` | 桌面应用安装包（推荐）：系统托盘常驻、**不占用任何端口** |',
+            '| `scoop-manager-portable-*.exe` | 单文件服务版：双击启动本地 Web 服务并自动打开浏览器，也可交给 pm2 |',
+            '',
+            '**Build Info / 构建信息**',
+            "- 版本: $tag",
+            '- 平台: Windows x64（GitHub Actions）',
+            "- 运行时: Node $(node -v) / Bun $(bun --version)",
+            "- 构建时间(UTC): $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))"
+          ) -join "`n"
+          $notes += $buildInfo
+
+          # 说明文本走文件传递，避免多行内容在命令行参数里被转义破坏
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -Path $notesPath -Value $notes -Encoding utf8
+
+          $assets = @(Get-ChildItem "release/*.exe").FullName
+
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            # 已存在（例如重跑）：同步标题与说明，并覆盖上传资产
+            gh release edit $tag --title "Scoop Manager $tag" --notes-file $notesPath
+            gh release upload $tag $assets --clobber
+          } else {
+            gh release create $tag $assets --title "Scoop Manager $tag" --notes-file $notesPath
+          }
+          Write-Host "已发布 $tag（$($assets.Count) 个资产）"

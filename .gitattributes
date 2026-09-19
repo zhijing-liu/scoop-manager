@@ -1,0 +1,18 @@
+# 统一行尾：入库与检出都保持 LF。
+#
+# 不加这一条时，Windows 上默认的 core.autocrlf 会在检出时把文件转成 CRLF，
+# 于是「只改了一行」的提交会变成整个文件的行尾变更，diff 完全不可读；
+# 反过来从 CRLF 工作区提交也会污染仓库内容。
+*
+text=auto eol=lf
+
+# 二进制文件不参与任何行尾转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.exe  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
