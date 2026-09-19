@@ -134,9 +134,17 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
 
-          # 按提交记录自动生成变更说明，并把 #数字 引用转成显式链接
-          $notes = (gh api "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" -f tag_name=$tag |
-            ConvertFrom-Json).body
+          # 按提交记录自动生成变更说明。
+          # 仓库里还没有任何历史 tag 时（首次发版），generate-notes 会返回 422，
+          # 这里降级为默认说明，而不是让整个发布流程失败。
+          $generated = (gh api "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" -f tag_name=$tag --jq .body 2>$null)
+          if ($LASTEXITCODE -eq 0 -and $generated) {
+            $notes = $generated
+          } else {
+            Write-Host "自动生成变更说明不可用（首次发版常见），改用默认说明。"
+            $notes = "首个版本发布。"
+          }
+          # 把 #数字 引用转成显式链接，便于在 Release 页面直接点开
           $notes = $notes -replace '#(\d+)', "[PR #`$1](https://github.com/$env:GITHUB_REPOSITORY/pull/`$1)"
 
           $buildInfo = @(
