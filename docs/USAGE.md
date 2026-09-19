@@ -17,15 +17,15 @@
 ### 源码启动
 
 ```bash
-pnpm dev          # Bun
-pnpm dev:node     # Node + tsx
+bun run dev       # Bun
+bun run dev:node  # Node + tsx
 ```
 
 ### pm2 常驻
 
 ```bash
-pnpm run build
-pnpm run pm2:start
+bun run build
+bun run pm2:start
 ```
 
 pm2 配置里已加 `--no-open`，避免每次重启弹浏览器。

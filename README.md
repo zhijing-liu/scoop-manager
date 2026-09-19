@@ -19,13 +19,13 @@
 
 ```bash
 # 安装依赖
-pnpm install
+bun install
 
 # Bun（推荐，直接跑 TS）
-pnpm run dev
+bun run dev
 
 # 或 Node + tsx（热重载）
-pnpm run dev:node
+bun run dev:node
 ```
 
 启动后终端会打印访问地址（默认 <http://127.0.0.1:3000>），并自动打开浏览器。
@@ -33,9 +33,9 @@ pnpm run dev:node
 ### 方式二：Node 构建后运行（生产）
 
 ```bash
-pnpm install
-pnpm run build      # tsc 输出到 dist/
-pnpm start          # node dist/index.js
+bun install
+bun run build      # tsc 输出到 dist/
+bun run start       # node dist/index.js
 ```
 
 ### 方式三：打包单文件 exe
@@ -43,8 +43,8 @@ pnpm start          # node dist/index.js
 需要安装 [Bun](https://bun.sh)。
 
 ```bash
-pnpm install
-pnpm run build:exe
+bun install
+bun run build:exe
 ```
 
 产物为 `dist/scoop-manager.exe`，`public/` 整个目录树已内嵌其中，**可单独拷贝到任意机器运行**，无需 Node/Bun 环境或项目文件。
@@ -52,10 +52,10 @@ pnpm run build:exe
 ### 方式四：pm2 常驻
 
 ```bash
-pnpm run build          # 或跳过，使用 bun app 定义
-pnpm run pm2:start      # 等价于 pm2 start ecosystem.config.cjs
-pnpm run pm2:logs
-pnpm run pm2:stop
+bun run build          # 或跳过，使用 bun app 定义
+bun run pm2:start      # 等价于 pm2 start ecosystem.config.cjs
+bun run pm2:logs
+bun run pm2:stop
 ```
 
 `ecosystem.config.cjs` 内置两个 app：`scoop-manager`（Node 跑 `dist/index.js`）与 `scoop-manager-bun`（Bun 直接跑 `src/index.ts`），二选一即可。
@@ -65,18 +65,18 @@ pnpm run pm2:stop
 需要额外安装 [Rust](https://rustup.rs)（Tauri 的外壳是 Rust 写的）。
 
 ```bash
-pnpm install
-pnpm run desktop:release   # 一条命令走完：编译 sidecar → 生成图标与静态资源 → 打包 → 收拢到 release/
+bun install
+bun run desktop:release   # 一条命令走完：编译 sidecar → 生成图标与静态资源 → 打包 → 收拢到 release/
 ```
 
 需要更细的控制时可以拆开用：
 
 | 命令 | 做什么 |
 | --- | --- |
-| `pnpm run desktop:prep` | 只做前置：编译 exe、同步 sidecar、生成 `desktop/ui/` 与图标。**内容未变时自动跳过，不会刷新 mtime**，因此不会无谓地触发 Rust 重编译 |
-| `pnpm run desktop:build` | `desktop:prep` + `tauri build`，产出 NSIS 安装包 |
-| `pnpm run desktop:collect` | 只把安装包复制到 `release/`，不重新构建（构建已完成、只是收集失败时用） |
-| `pnpm run desktop:release` | `desktop:build` + `desktop:collect` |
+| `bun run desktop:prep` | 只做前置：编译 exe、同步 sidecar、生成 `desktop/ui/` 与图标。**内容未变时自动跳过，不会刷新 mtime**，因此不会无谓地触发 Rust 重编译 |
+| `bun run desktop:build` | `desktop:prep` + `tauri build`，产出 NSIS 安装包 |
+| `bun run desktop:collect` | 只把安装包复制到 `release/`，不重新构建（构建已完成、只是收集失败时用） |
+| `bun run desktop:release` | `desktop:build` + `desktop:collect` |
 
 产物：`release/Scoop Manager_x.y.z_x64-setup.exe`，按当前用户安装（无需管理员权限）。
 
@@ -115,11 +115,11 @@ git tag v1.0.1
 git push origin v1.0.1
 ```
 
-版本号由工作流自动同步到 `package.json` / `src/config.ts` / `desktop/tauri.conf.json` / `desktop/Cargo.toml` 四处（本地可用 `pnpm run version:set 1.0.1` 做同样的事）。
+版本号由工作流自动同步到 `package.json` / `src/config.ts` / `desktop/tauri.conf.json` / `desktop/Cargo.toml` 四处（本地可用 `bun run version:set 1.0.1` 做同样的事）。
 
 只想先拿一份可安装的包、暂时不发布 Release，就手动触发 release 工作流并填版本号——产物会作为 artifact 上传。
 
-> CI 使用的包管理器是 **bun**（`bun install --frozen-lockfile`）。仓库里同时存在 `bun.lock` 与 `pnpm-lock.yaml`，Tauri CLI 会就此给出警告；建议后续二选一，删掉不用的那个。
+> 包管理器统一为 **bun**（CI 用 `bun install --frozen-lockfile`）。`pnpm-lock.yaml` 已加入 `.gitignore` 不再入库，避免两个锁文件并存时 Tauri CLI 报 `Only one package manager should be used`，也避免 CI 选错。
 
 ---
 
@@ -306,22 +306,22 @@ scoop-manager/
 
 | 命令 | 说明 |
 | --- | --- |
-| `pnpm run dev` | Bun 直接运行源码 |
-| `pnpm run dev:node` | tsx watch 运行源码 |
-| `pnpm run typecheck` | `tsc --noEmit` 类型检查 |
-| `pnpm run build` | 编译到 `dist/` |
+| `bun run dev` | Bun 直接运行源码 |
+| `bun run dev:node` | tsx watch 运行源码 |
+| `bun run typecheck` | `tsc --noEmit` 类型检查 |
+| `bun run build` | 编译到 `dist/` |
 | `pnpm start` | Node 运行编译产物 |
-| `pnpm run build:exe` | 打包单文件 exe（需 Bun） |
-| `pnpm run test` | 跑全部自测（`test:ipc` + `test:shim`） |
-| `pnpm run test:ipc` | IPC 协议自测（接受可选的 `.exe` 路径参数，用于验证编译产物） |
-| `pnpm run test:shim` | 垫片自测（用 stub 在 Bun 里求值 `ipc-shim.js`，覆盖 EventSource 与 fetch 代理） |
-| `pnpm run desktop:prep` | 桌面端全部前置（exe → sidecar → ui → 图标），内容未变时自动跳过 |
-| `pnpm run desktop:dev` | 启动桌面端开发态（Tauri dev，debug 构建） |
-| `pnpm run desktop:build` | 打包桌面端安装包（自动先跑 prep） |
-| `pnpm run desktop:collect` | 只把安装包收拢到 `release/`，不重新构建 |
-| `pnpm run desktop:release` | 完整发布：`desktop:build` + 收拢到 `release/` |
-| `pnpm run version:set <版本>` | 把版本号同步到 `package.json` / `src/config.ts` / `tauri.conf.json` / `Cargo.toml` |
-| `pnpm run pm2:start` / `pm2:stop` / `pm2:logs` | pm2 启停与日志 |
+| `bun run build:exe` | 打包单文件 exe（需 Bun） |
+| `bun run test` | 跑全部自测（`test:ipc` + `test:shim`） |
+| `bun run test:ipc` | IPC 协议自测（接受可选的 `.exe` 路径参数，用于验证编译产物） |
+| `bun run test:shim` | 垫片自测（用 stub 在 Bun 里求值 `ipc-shim.js`，覆盖 EventSource 与 fetch 代理） |
+| `bun run desktop:prep` | 桌面端全部前置（exe → sidecar → ui → 图标），内容未变时自动跳过 |
+| `bun run desktop:dev` | 启动桌面端开发态（Tauri dev，debug 构建） |
+| `bun run desktop:build` | 打包桌面端安装包（自动先跑 prep） |
+| `bun run desktop:collect` | 只把安装包收拢到 `release/`，不重新构建 |
+| `bun run desktop:release` | 完整发布：`desktop:build` + 收拢到 `release/` |
+| `bun run version:set <版本>` | 把版本号同步到 `package.json` / `src/config.ts` / `tauri.conf.json` / `Cargo.toml` |
+| `bun run pm2:start` / `pm2:stop` / `pm2:logs` | pm2 启停与日志 |
 
 ---
 

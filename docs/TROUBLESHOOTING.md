@@ -5,7 +5,7 @@
 > **通用手段**：先用 `--log-level debug` 启动，日志会打印 HTTP 访问、静态资源解析结果、命令组装等细节。
 >
 > ```bash
-> pnpm dev -- --log-level debug
+> bun run dev -- --log-level debug
 > ```
 >
 > 也可以在浏览器里打开 `http://127.0.0.1:<端口>/api/health`，一次性看到运行时、静态资源来源、Scoop 定位与任务计数。
@@ -141,7 +141,7 @@ $OutputEncoding = [Text.Encoding]::UTF8
 
 - **开发态**：确保在项目根目录启动（`public/` 必须与 `package.json` 同级）。
 - **Node 构建态**：确认 `dist/` 与 `public/` 都在，且没有单独拷贝 `dist/` 到别处。
-- **exe 态**：说明打包时没有内嵌成功。请用 `pnpm run build:exe` 重新打包，并确认输出日志里有 `assets: ['public']`。
+- **exe 态**：说明打包时没有内嵌成功。请用 `bun run build:exe` 重新打包，并确认输出日志里有 `assets: ['public']`。
 - **样式丢失**：检查 `public/css/style.css` 是否存在，以及浏览器 Network 面板里它的 HTTP 状态。
 - **`Alpine.js 未能加载`**：确认 `public/vendor/alpine.min.js` 存在且未被安全软件或反向代理拦截。
 
@@ -224,7 +224,7 @@ $OutputEncoding = [Text.Encoding]::UTF8
 
 ## 14. exe 打包失败
 
-**现象**：`pnpm run build:exe` 报错，或产物体积异常、运行时找不到静态资源。
+**现象**：`bun run build:exe` 报错，或产物体积异常、运行时找不到静态资源。
 
 **排查**
 
@@ -251,7 +251,7 @@ dist\scoop-manager.exe --no-open --port 3000
 
 **排查**
 
-1. 看日志：`pnpm run pm2:logs`（或 `pm2 logs scoop-manager`）。
+1. 看日志：`bun run pm2:logs`（或 `pm2 logs scoop-manager`）。
 2. Node 版本低于 18 会直接启动失败 —— `node -v` 确认。
 3. 使用 `scoop-manager-bun` 定义时，确保 `bun` 在 `PATH` 中且 `pm2` 能找到它。
 4. 端口被占用：改 `ecosystem.config.cjs` 里的 `PORT`，或用环境变量 `SCOOP_MANAGER_PORT` 覆盖。
@@ -412,7 +412,7 @@ rustup toolchain install stable-x86_64-pc-windows-msvc
 rustc -vV      # 必须能看到 host: x86_64-pc-windows-msvc
 ```
 
-### `pnpm run desktop:build` 失败：找不到 cargo / rustc
+### `bun run desktop:build` 失败：找不到 cargo / rustc
 
 Tauri 的外壳是 Rust 写的，需要先安装工具链：
 
@@ -502,8 +502,8 @@ bun run test:shim
 
 `bun.lock` 与 `package.json` 不一致。本地跑一次 `bun install`，把新的 `bun.lock` 提交上去。
 
-另外仓库里同时存在 `bun.lock` 与 `pnpm-lock.yaml`，CI 只用 bun，Tauri CLI 会就此事给出
-`Only one package manager should be used` 的警告，建议二选一删掉不用的那个。
+包管理器已统一为 bun：`pnpm-lock.yaml` 加入了 `.gitignore` 不再入库，避免两个锁文件并存时
+Tauri CLI 报 `Only one package manager should be used`。
 
 **`cargo check` 或 `tauri build` 报找不到 frontendDist / 图标**
 
