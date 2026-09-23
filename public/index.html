@@ -575,8 +575,9 @@
                             :disabled="installed.busyName === app.name">
                       <svg class="icon"><use href="#i-shuffle"></use></svg>
                     </button>
-                    <button type="button" class="icon-btn is-danger" title="卸载" @click="installed.uninstall(app)"
-                            :disabled="installed.busyName === app.name">
+                    <!-- 同一个按钮按状态自适应：残骸时 title 会变成「清理残骸」的说明 -->
+                    <button type="button" class="icon-btn is-danger" :title="installed.removeTitle(app)"
+                            @click="installed.uninstall(app)" :disabled="installed.busyName === app.name">
                       <svg class="icon"><use href="#i-trash"></use></svg>
                     </button>
                   </td>
@@ -1278,13 +1279,6 @@
               <span class="tag is-warn" x-text="'缺依赖 ' + dep"></span>
             </template>
           </div>
-          <!-- 残骸下单开一个动作：scoop uninstall 对它无效（Scoop 认为它"未安装"） -->
-          <div class="detail-actions" x-show="installed.detail.app ? installed.detail.app.installFailed : false">
-            <button type="button" class="btn btn-danger is-small" @click="installed.cleanRemains(installed.detail.app)"
-                    :disabled="installed.busyName === installed.detail.name">
-              <svg class="icon"><use href="#i-trash"></use></svg><span>清理残骸</span>
-            </button>
-          </div>
           <p class="muted" x-text="installed.repairPlan(installed.detail.app || {}).hint"></p>
           <template x-for="cmd in installed.repairPlan(installed.detail.app || {}).commands" :key="cmd">
             <div class="copy-row">
@@ -1365,9 +1359,11 @@
                 :disabled="installed.busyName === installed.detail.name">
           <svg class="icon"><use href="#i-arrow-up"></use></svg><span>更新</span>
         </button>
-        <button type="button" class="btn btn-danger" @click="installed.uninstall(installed.detail.app)"
-                :disabled="installed.busyName === installed.detail.name">
-          <svg class="icon"><use href="#i-trash"></use></svg><span>卸载</span>
+        <!-- 残骸下这个按钮就是「清理残骸」：位置不动、只换文案与行为 -->
+        <button type="button" class="btn btn-danger" :title="installed.removeTitle(installed.detail.app)"
+                @click="installed.uninstall(installed.detail.app)" :disabled="installed.busyName === installed.detail.name">
+          <svg class="icon"><use href="#i-trash"></use></svg>
+          <span x-text="installed.removeLabel(installed.detail.app)"></span>
         </button>
       </footer>
     </aside>

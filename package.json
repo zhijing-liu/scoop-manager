@@ -1,6 +1,6 @@
 {
   "name": "scoop-manager",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Scoop 的 Web GUI 管理器（Node / Bun 双运行时，可打包为单文件 exe）",
   "type": "module",
   "main": "dist/index.js",

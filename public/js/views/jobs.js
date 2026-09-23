@@ -52,6 +52,10 @@ export function createJobs(shell) {
   let logSeq = 0;
   /** 当前这条 SSE 流对应的任务 id —— 事件回调一律以它为准，而不是「当前选中项」 */
   let streamJobId = '';
+  /** 已处理过终态的任务 id（防重复收尾，见 handleEvent 里的说明） */
+  const finalizedJobs = new Set();
+  /** 上限：任务列表本身也有清理，这里跟着封顶，避免长期运行后无限增长 */
+  const FINALIZED_LIMIT = 200;
 
   function detach() {
     if (stream) {
@@ -263,6 +267,27 @@ export function createJobs(shell) {
       }
 
       if (type === 'done' && payload) {
+        /**
+         * 终态事件按定义只该处理一次。
+         *
+         * 重复处理的后果不只是日志重复：每个重复的 done 都会走一遍
+         * `refreshAll({ force: true })`（强制重扫磁盘 + 重建清单索引，约 1 秒），
+         * 表现为顶栏「刷新」按钮在可用/禁用之间持续闪烁；同时 shell.running
+         * 会被多扣、任务角标失真。
+         *
+         * 来源可能是桌面端 IPC 垫片重复投递（web 端直连 EventSource 时正常），
+         * 也可能是 SSE 断线重放 —— 都在这里挡掉。
+         */
+        if (finalizedJobs.has(jobId)) {
+          console.warn('[jobs] 忽略重复的终态事件', jobId, payload.status);
+          return;
+        }
+        finalizedJobs.add(jobId);
+        if (finalizedJobs.size > FINALIZED_LIMIT) {
+          const oldest = finalizedJobs.values().next().value;
+          if (oldest) finalizedJobs.delete(oldest);
+        }
+
         this.patchJob(jobId, {
           status: payload.status,
           exitCode: payload.exitCode ?? null,

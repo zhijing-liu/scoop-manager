@@ -67,8 +67,12 @@ export function createInstalled(shell) {
         // 选中项按 key 收敛：应用被卸载 / 换了范围后要自动从选中集合里移除
         const alive = new Set(this.items.map((item) => this.selectionKey(item)));
         this.selected = this.selected.filter((key) => alive.has(key));
-        if (!shell.counts || (shell.updates?.length ?? 0) === 0) {
-          // 保证「可更新」角标可用
+        // 保证「可更新」角标可用。
+        // 但静默后台刷新（silent=true，由 refreshAll 派生）绝不能走这里 ——
+        // 那会形成 refreshAll → installed.load → refreshAll 的相互递归，
+        // 表现为顶栏刷新按钮的禁用态疯狂闪烁。走到这里时全局数据刚刚刷过，
+        // 本来也不需要再刷一次。
+        if (!silent && (!shell.counts || (shell.updates?.length ?? 0) === 0)) {
           await shell.refreshAll({ silentOnboarding: true });
         }
       } catch (error) {
@@ -140,7 +144,8 @@ export function createInstalled(shell) {
         commands.push(`scoop install ${app.name}`);
         hints.push(
           '安装不完整：目录在但读不到 install.json。Scoop 因此认为它"未安装"，'
-          + `scoop uninstall 对它无效 —— 请用上面的「清理残骸」（或手动删除 ${appDir}）后再重新安装。`,
+          + `scoop uninstall 对它无效 —— 底部的删除按钮已自动变为「清理残骸」，点它即可`
+          + `（或手动删除 ${appDir}）后再重新安装。`,
         );
       }
       if (app.manifestRemoved) {
@@ -280,10 +285,22 @@ export function createInstalled(shell) {
     async batchUninstall() {
       const entries = this.selectedInView;
       if (entries.length === 0) return;
-      const names = entries.map((item) => item.name);
+
+      // 残骸不能混进批量：`scoop uninstall` 对它无效（Scoop 认为它"未安装"），
+      // 提交了只会得到"批量跑完了但什么都没发生"。这里先摘出来说明白，
+      // 让用户用「只看异常」筛出来后逐个走「清理残骸」。
+      const remains = entries.filter((item) => item.installFailed);
+      const removable = entries.filter((item) => !item.installFailed);
+      if (removable.length === 0) {
+        shell.toast(`选中的 ${remains.length} 个应用都是安装残骸，scoop 无法卸载：请用「只看异常」筛出后逐个「清理残骸」。`, 'warn', 8000);
+        return;
+      }
+
+      const names = removable.map((item) => item.name);
       const confirmed = await shell.askConfirm({
         title: '批量卸载',
-        message: `将卸载选中的 ${names.length} 个应用：${names.slice(0, 8).join('、')}${names.length > 8 ? ' 等' : ''}。`,
+        message: `将卸载选中的 ${names.length} 个应用：${names.slice(0, 8).join('、')}${names.length > 8 ? ' 等' : ''}。`
+          + (remains.length > 0 ? `\n其中 ${remains.length} 个是安装残骸，会被跳过（需逐个「清理残骸」）。` : ''),
         detail: '卸载后可通过「搜索与安装」重新安装。持久化数据（persist 目录）会一并删除，不可恢复。',
         confirmText: '卸载',
         danger: true,
@@ -294,8 +311,11 @@ export function createInstalled(shell) {
         // 同 batchUpdate：按范围拆开提交，全局应用需要 -g 才能被命中。
         // purge 必须显式传：不传的话后端默认 false，批量卸载会残留 persist 数据，
         // 与单行卸载（固定 -p）行为不一致。
-        await shell.submitScopedBatches('/apps/uninstall', entries, { purge: true });
+        await shell.submitScopedBatches('/apps/uninstall', removable, { purge: true });
         this.clearSelection();
+        if (remains.length > 0) {
+          shell.toast(`已提交 ${removable.length} 个卸载；另有 ${remains.length} 个残骸被跳过，请逐个「清理残骸」。`, 'warn', 8000);
+        }
       } catch (error) {
         shell.toast(errorMessage(error), 'danger');
       } finally {
@@ -330,12 +350,34 @@ export function createInstalled(shell) {
       }
     },
 
+    /**
+     * 卸载按钮的文案：残骸下同一个按钮就是「清理残骸」。
+     *
+     * 不做成两个按钮：残骸本来就是「卸载失败留下的东西」，用户的心智模型是
+     * "我要把这个删掉" —— 让他在两个位置之间找按钮是设计失误。按钮文案与行为
+     * 一起按状态切换，位置保持不动。
+     */
+    removeLabel(app) {
+      return app?.installFailed ? '清理残骸' : '卸载';
+    },
+
+    /** 卸载按钮的 tooltip：把"为什么是清理残骸"讲清楚 */
+    removeTitle(app) {
+      return app?.installFailed
+        ? '安装残骸：Scoop 认为它未安装，uninstall 无效，这里会直接删除目录 / shim / 用户数据'
+        : '卸载';
+    },
+
+    /**
+     * 删除入口（列表行与详情抽屉共用）。
+     *
+     * 残骸必须先转成清理：Scoop 以 install.json 判断"是否安装"，残骸读不出
+     * install.json → `scoop uninstall` 只打印 "ERROR 'xxx' isn't installed."
+     * 然后退 0（什么都不做），提交任务只会得到一条"假成功"。
+     */
     async uninstall(app) {
-      // 残骸走 scoop uninstall 是无效动作：Scoop 以 install.json 判断"是否安装"，
-      // 残骸读不出 install.json → 它只打印 "ERROR 'xxx' isn't installed."
-      // 然后退 0（什么都不做），提交任务只会得到一条"假成功"。
       if (app.installFailed) {
-        shell.toast(`${app.name} 是安装残骸，scoop uninstall 处理不了；请用「清理残骸」。`, 'warn', 6000);
+        await this.cleanRemains(app);
         return;
       }
       const confirmed = await shell.askConfirm({
@@ -369,7 +411,7 @@ export function createInstalled(shell) {
       const confirmed = await shell.askConfirm({
         title: `清理安装残骸 ${app.name}`,
         message: `将删除 ${String(app.path ?? '').replace(/[\\/]current$/, '')}、它留下的 shim 命令，以及 persist 里的用户数据。`,
-        detail: '该应用已是安装残骸（Scoop 无法卸载它，scoop status 里会一直显示 Install failed）。此操作不可恢复。',
+        detail: '该应用已是安装残骸：Scoop 认为它"未安装"，scoop uninstall 对它无效，scoop status 里会一直显示 Install failed。此操作不可恢复。',
         confirmText: '清理残骸',
         danger: true,
       });

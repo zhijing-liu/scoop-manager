@@ -1,6 +1,6 @@
 [package]
 name = "scoop-manager-desktop"
-version = "1.2.0"
+version = "1.2.1"
 description = "Scoop Manager 桌面端外壳（零端口 IPC）"
 edition = "2021"
 rust-version = "1.77.2"
