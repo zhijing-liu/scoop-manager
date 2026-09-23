@@ -137,8 +137,9 @@ pub fn spawn(app: &AppHandle) -> Result<(), String> {
     let stderr = child.stderr.take();
 
     let bridge = app.state::<Bridge>();
-    // 先登记句柄再启动读取线程：读取线程一启动就可能收到 ready 帧
-    bridge.attach(child);
+    // 先登记句柄再启动读取线程：读取线程一启动就可能收到 ready 帧。
+    // 记下代次，让这条读取线程只对"它盯的那个进程"生效（见 mark_dead_if_current）。
+    let generation = bridge.attach(child);
 
     // ---- stdout：按帧累积。注意不能按行读，body 里含换行。
     if let Some(stdout) = stdout {
@@ -165,10 +166,13 @@ pub fn spawn(app: &AppHandle) -> Result<(), String> {
             }
 
             // stdout EOF 意味着子进程已经结束：立刻标记不可用，让前端的请求
-            // 快速失败而不是傻等就绪超时
-            bridge.mark_dead();
+            // 快速失败而不是傻等就绪超时。
+            // 但如果期间已经重启过（代次变了），这个 EOF 属于旧进程，
+            // 既不能把新进程标记成已死，也不能对外播报"服务已退出"。
+            let is_current = bridge.is_current(generation);
+            bridge.mark_dead_if_current(generation);
 
-            if !SHUTTING_DOWN.load(Ordering::SeqCst) {
+            if is_current && !SHUTTING_DOWN.load(Ordering::SeqCst) {
                 eprintln!("[server] 本地服务进程已退出。");
                 append_log("[exit] 本地服务进程已退出。\n");
                 if let Some(tray) = handle.tray_by_id(crate::tray::TRAY_ID) {
@@ -274,5 +278,32 @@ pub fn open_log_file(app: AppHandle) -> Result<(), String> {
     }
     app.opener()
         .open_path(file.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
+/// 用系统默认浏览器打开一个 **http(s)** 链接（应用主页、bucket 源地址等）。
+///
+/// 为什么不直接把 opener 插件的能力授予前端：`open_url` / `open_path` 会把参数交给
+/// 系统 shell 处理，一旦放行 `file:`、`javascript:` 或任意字符串，就等于把
+/// "让系统执行/打开某个东西"的能力交给了页面（而页面数据来自第三方 bucket manifest）。
+/// 所以这里收口成一条窄命令：只接受 http/https，拒绝控制字符与超长输入。
+///
+/// 前端在桌面端不会走 `target="_blank"`：WebView 不处理新窗口请求，点击毫无反应。
+#[tauri::command]
+pub fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+    let target = url.trim();
+    if target.is_empty() || target.len() > 2048 {
+        return Err("链接为空或过长。".to_string());
+    }
+    if target.chars().any(char::is_control) {
+        return Err("链接包含非法字符。".to_string());
+    }
+    let colon = target.find(':').ok_or_else(|| "链接缺少协议前缀。".to_string())?;
+    let scheme = target[..colon].to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("只允许打开 http/https 链接（收到 {scheme}:）。"));
+    }
+    app.opener()
+        .open_url(target.to_string(), None::<&str>)
         .map_err(|error| error.to_string())
 }

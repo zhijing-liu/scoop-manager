@@ -6,10 +6,31 @@
  */
 
 import { api, errorMessage } from '../api.js';
+
 import { openJobStream } from '../sse.js';
 import { formatClock, formatDuration, formatTime, jobKindLabel, jobStatusMeta } from '../format.js';
 
 const MAX_LOG_LINES = 4000;
+
+/**
+ * 把后端可能返回的各种 error 形态统一成 JobError（{ code, message, detail }）。
+ *
+ * 必须保持对象形态：任务列表每一行用 `job.error.message` 渲染错误文案。
+ * 旧实现把它转成了字符串，于是 SSE 的 done 事件一到达，该行的错误提示就再也显示不出来
+ * （要等 /jobs 重新拉取才恢复），而详情面板走的是另一条链路，形态不一致。
+ */
+function toJobError(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'string') return { code: 'ERROR', message: raw };
+  if (typeof raw === 'object') {
+    const message =
+      typeof raw.message === 'string' && raw.message.trim()
+        ? raw.message
+        : (() => { try { return JSON.stringify(raw); } catch { return String(raw); } })();
+    return { code: typeof raw.code === 'string' ? raw.code : 'ERROR', message, detail: raw.detail };
+  }
+  return { code: 'ERROR', message: String(raw) };
+}
 
 /**
  * 等一次渲染后再执行。
@@ -27,6 +48,10 @@ function afterRender(fn) {
 export function createJobs(shell) {
   let stream = null;
   let listTimer = null;
+  /** 日志行的稳定 key（用数组下标会让日志超过 600 行后整块 DOM 重建） */
+  let logSeq = 0;
+  /** 当前这条 SSE 流对应的任务 id —— 事件回调一律以它为准，而不是「当前选中项」 */
+  let streamJobId = '';
 
   function detach() {
     if (stream) {
@@ -70,6 +95,8 @@ export function createJobs(shell) {
     streamState: 'closed',
     cancelling: false,
     clearing: false,
+    /** 正在重放某个任务的请求：用于禁用重试按钮，避免连点提交重复任务 */
+    retrying: false,
 
     async load() {
       this.loading = this.items.length === 0;
@@ -135,8 +162,13 @@ export function createJobs(shell) {
 
     durationOf(job) {
       if (!job?.startedAt) return '—';
-      const end = job.endedAt ?? Date.now();
-      return formatDuration(end - job.startedAt);
+      const start = Number(job.startedAt);
+      if (!Number.isFinite(start)) return '—';
+      // 未结束的任务以 shell.now 为参照：它每秒递增，看板上的「耗时」才会跟着走。
+      // 已结束的任务走 endedAt 分支、不读 shell.now，因此不会每秒重渲染。
+      const end = job.endedAt != null ? Number(job.endedAt) : shell.now || Date.now();
+      if (!Number.isFinite(end)) return '—';
+      return formatDuration(end - start);
     },
 
     // ---------------------------------------------------------------- 实时日志
@@ -149,6 +181,9 @@ export function createJobs(shell) {
       if (!id) return;
       detach();
       this.activeId = id;
+      // 事件回调里不要再读 this.activeId：用户切换选中项后，
+      // 旧任务的 status/done 事件会把新任务的状态改掉。
+      streamJobId = id;
       if (!options.keepLogs) {
         this.logs = [];
         this.truncated = false;
@@ -197,8 +232,12 @@ export function createJobs(shell) {
     },
 
     handleEvent({ type, payload }) {
+      // 以「这条流对应的任务」为准，而不是用户当前选中的任务
+      const jobId = streamJobId;
+
       if (type === 'log' && payload) {
         this.logs.push({
+          key: ++logSeq,
           seq: payload.seq,
           ts: payload.ts,
           stream: payload.stream ?? 'stdout',
@@ -214,30 +253,32 @@ export function createJobs(shell) {
 
       if (type === 'notice' && payload) {
         this.truncated = true;
-        this.logs.push({ seq: 0, ts: Date.now(), stream: 'system', text: payload.message ?? '部分日志已丢失。' });
+        this.logs.push({ key: ++logSeq, seq: 0, ts: Date.now(), stream: 'system', text: payload.message ?? '部分日志已丢失。' });
         return;
       }
 
       if (type === 'status' && payload) {
-        this.patchJob(this.activeId, { status: payload.status });
+        this.patchJob(jobId, { status: payload.status });
         return;
       }
 
       if (type === 'done' && payload) {
-        this.patchJob(this.activeId, {
+        this.patchJob(jobId, {
           status: payload.status,
           exitCode: payload.exitCode ?? null,
-          error: payload.error ?? null,
+          error: toJobError(payload.error),
           canCancel: false,
         });
         void this.load();
-        void this.loadDetail(this.activeId);
+        // 用户可能已经切到别的任务去看日志了，这时不要把详情面板换成旧任务的
+        if (this.activeId === jobId) void this.loadDetail(jobId);
         // 提交方（配置开关、Bucket 增删等）可能注册了后置动作，例如重新拉取数据
-        shell.notifyJobDone(this.activeId, payload.status);
+        shell.notifyJobDone(jobId, payload.status);
         shell.running = Math.max(0, shell.running - 1);
         if (payload.status === 'succeeded') {
-          // 变更类任务成功后，缓存与索引都可能已过期
-          void shell.refreshAll({ silentOnboarding: true });
+          // 变更类任务成功后，缓存与索引都可能已过期；force 让后端重读磁盘，
+          // 同时静默同步已安装列表（覆盖在任务页点「重试」成功的场景）。
+          void shell.refreshAll({ force: true, silentOnboarding: true });
         }
       }
     },
@@ -310,83 +351,58 @@ export function createJobs(shell) {
       }
     },
 
-    /** 只有能从任务元信息还原出原始请求的类型，才允许一键重试 */
+    /**
+     * 能否一键重试：任务里带着可重放的原始请求。
+     *
+     * 由后端在创建任务时决定（只有能重放的任务才会带 request），
+     * 前端不再维护一份「哪些 kind 可重试」的白名单 —— 那正是之前参数丢失的根因：
+     * 从展示用的 target 反推请求，global / arch / force 全都丢了。
+     */
     canRetry(job) {
-      return [
-        'app.install',
-        'app.uninstall',
-        'app.update',
-        'app.cleanup',
-        'app.reset',
-        'bucket.update',
-        'scoop.checkup',
-        'scoop.update',
-        'cache.remove',
-      ].includes(job.kind);
+      return Boolean(job && job.request && typeof job.request.path === 'string');
     },
 
+    /** 原样重放任务的原始请求。 */
     async retry(job) {
-      const targets = (job.target ?? '')
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
+      if (this.retrying) return;
+      if (!this.canRetry(job)) {
+        shell.toast('该任务没有可重放的请求记录，请回到对应页面重新操作。', 'info');
+        return;
+      }
 
+      const method = String(job.request.method || 'POST').toUpperCase();
+      const fullPath = String(job.request.path);
+      // jobs.json 是用户可写的文件，重放前再校验一次路径：只允许同源 /api 路径
+      if (!fullPath.startsWith('/api/') || fullPath.includes('..')) {
+        shell.toast('任务记录里的请求路径不可用，无法重试。', 'warn');
+        return;
+      }
+      // api 客户端会自己补 /api 前缀（含部署前缀），这里去掉
+      const path = fullPath.slice('/api'.length);
+      const body = job.request.body ?? {};
+
+      this.retrying = true;
       try {
-        switch (job.kind) {
-          case 'app.install': {
-            const data = await api.post('/apps/install', { apps: targets });
-            shell.trackJob(data.job, { stay: true });
-            break;
-          }
-          case 'app.uninstall': {
-            const data = await api.post('/apps/uninstall', { apps: targets, purge: true });
-            shell.trackJob(data.job, { stay: true });
-            break;
-          }
-          case 'app.update': {
-            const payload = targets.includes('*') || targets.length === 0 ? { all: true } : { apps: targets };
-            const data = await api.post('/apps/update', payload);
-            shell.trackJob(data.job, { stay: true });
-            break;
-          }
-          case 'app.cleanup': {
-            const data = await api.post('/cache/cleanup', { apps: targets });
-            shell.trackJob(data.job, { stay: true });
-            break;
-          }
-          case 'app.reset': {
-            const data = await api.post('/apps/reset', { apps: targets });
-            shell.trackJob(data.job, { stay: true });
-            break;
-          }
-          case 'bucket.update': {
-            const data = await api.post('/buckets/update', { name: targets[0] ?? null });
-            shell.trackJob(data.job, { stay: true });
-            break;
-          }
-          case 'scoop.checkup': {
-            const data = await api.post('/scoop/checkup');
-            shell.trackJob(data.job, { stay: true });
-            break;
-          }
-          case 'scoop.update': {
-            const data = await api.post('/scoop/self-update');
-            shell.trackJob(data.job, { stay: true });
-            break;
-          }
-          case 'cache.remove': {
-            const data = await api.post('/cache/remove', { target: targets[0] ?? null });
-            shell.trackJob(data.job, { stay: true });
-            break;
-          }
-          default:
-            shell.toast('该任务类型暂不支持一键重试，请回到对应页面重新操作。', 'info');
-            return;
+        const data =
+          method === 'GET'
+            ? await api.get(path)
+            : method === 'PUT'
+              ? await api.put(path, body)
+              : method === 'DELETE'
+                ? await api.del(path)
+                : await api.post(path, body);
+
+        if (data && data.job) {
+          shell.trackJob(data.job, { stay: true });
+          shell.toast('已重新提交任务', 'success');
+        } else {
+          shell.toast('已重新执行该请求。', 'success');
         }
-        shell.toast('已重新提交任务', 'success');
         await this.load();
       } catch (error) {
         shell.toast(errorMessage(error), 'danger');
+      } finally {
+        this.retrying = false;
       }
     },
 

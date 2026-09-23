@@ -11,11 +11,11 @@ graph TD
   UI["浏览器 UI (Alpine.js · 6 视图)"] -->|"REST /api/*"| App["Hono App + 统一错误中间件"]
   UI -->|"SSE /api/jobs/:id/events"| Jobs
   App --> Routes["routes/* 路由层（仅参数校验与响应封装）"]
-  Routes --> Services["services/* 领域服务层（不感知 HTTP）"]
+  Routes --> ScoopCore["scoop-core/* 框架无关领域内核（不感知 HTTP / Tauri）"]
   Routes --> Jobs["jobs/* 任务与串行队列"]
   Jobs --> Runner["scoop-runner（spawn，串行队列，进程树 kill）"]
-  Services --> Runner
-  Services --> Scan["文件系统扫描（manifests / apps / config）"]
+  ScoopCore --> Runner
+  ScoopCore --> Scan["文件系统扫描（manifests / apps / config）"]
   Runner --> PS["PowerShell → scoop.ps1"]
   Scan --> ScoopDir["SCOOP / SCOOP_GLOBAL 目录"]
   Jobs --> Ring["环形日志缓冲 + 订阅广播"]
@@ -26,10 +26,10 @@ graph TD
 
 | 层 | 职责 | 约束 |
 | --- | --- | --- |
-| `routes/` | 参数校验、调用服务、封装响应 | 不写业务逻辑，不直接碰进程或磁盘 |
-| `services/` | 全部领域逻辑 | **不感知 HTTP**（不引用 Hono 的 Context） |
+| `routes/` | 参数校验、调用内核、封装响应 | 不写业务逻辑，不直接碰进程或磁盘 |
+| `scoop-core/` | 全部领域逻辑（框架无关） | **不感知 HTTP / Tauri**（不引用 Hono 的 Context，也不引用 Tauri API） |
 | `jobs/` | 「长耗时 + 流式输出 + 可取消」的统一封装 | 对外只暴露 Job 契约 |
-| `services/scoop-runner.ts`<br>`services/scoop-locator.ts` 等 | 与外部世界（进程 / 磁盘）交互的**唯一出口** | 便于替换与测试 |
+| `scoop-core/runner.ts`<br>`scoop-core/locator.ts` 等 | 与外部世界（进程 / 磁盘）交互的**唯一出口** | 便于替换与测试 |
 | `server/` | Hono 组装、运行时适配、静态资源、错误模型 | — |
 | `utils/` | 无状态的通用工具 | 不依赖上层 |
 
@@ -55,8 +55,15 @@ Scoop **没有**通用的 `--json` 开关。`list` / `status` / `search` / `info
 
 ### 2. 状态变更 → 才走 CLI
 
-`install` / `uninstall` / `update` / `hold` / `cleanup` / `reset` / `bucket add|rm` / `config set|rm` / `cache rm` 全部通过 PowerShell 调用 `scoop.ps1`。
+`install` / `uninstall` / `update` / `hold` / `unhold` / `cleanup` / `reset` / `bucket add|rm` / `config set|rm` / `cache rm` / `import` / `list` 全部通过 PowerShell 调用 `scoop.ps1`。
 **Bucket 的同步例外**：Scoop 没有 `bucket update` 子命令，因此「更新 Bucket」与 Scoop 内部的 `Sync-Bucket` 一致——对每个 git 仓库执行 `git pull`（并把「配置与代理」里的代理透传给 git）。
+**`list` 的定位**：只用于「原始清单」对照展示（输出进任务日志，不解析），界面数据仍以文件系统扫描为准。
+
+> 调用 `scoop.ps1` 的命令末尾必须是 `... | Out-Default; exit $LASTEXITCODE`，顺序不能改：
+> `-Command` 模式下 PowerShell 会把管道输出对象缓存到命令结束才渲染，而 `exit` 会立刻
+> 终止运行空间、把它们整批丢掉。`scoop status` 的表格曾因此整块消失（只剩 `Write-Host`
+> 直写的 WARN 行），而该表格正是「检查更新状态」唯一的解析来源 —— 后果是它永远解析出
+> 0 项、界面显示"全部最新"。`Out-Default` 在管道内立即渲染，且不影响退出码与增量输出。
 
 ### 这样做的收益与代价
 
@@ -75,7 +82,7 @@ Scoop **没有**通用的 `--json` 开关。`list` / `status` / `search` / `info
 
 ## 三、命令执行器（安全与稳定性的关键）
 
-实现在 `services/powershell.ts` + `services/scoop-runner.ts`。
+实现在 `scoop-core/powershell.ts` + `scoop-core/runner.ts`。
 
 ### 定位 PowerShell
 
@@ -154,9 +161,9 @@ interface JobEvent {
 
 ### 串行队列
 
-`jobs/queue.ts` 保证变更类任务**串行执行**：新任务入队等待，而不是并发调用 Scoop。只读操作（如 `scoop status`、`export`）标记 `serial: false`，不入队。
+`scoop-core/queue.ts` 保证变更类任务**串行执行**：新任务入队等待，而不是并发调用 Scoop。只读操作（如 `scoop status`、`export`）标记 `serial: false`，不入队。
 
-`GET /api/jobs` 返回的 `queued` 即为队列中等待的任务数。
+`runner` 与 `/api/jobs`、`/api/health` 上报的 `queued` 共用同一个 `mutationQueue` 实例，因此该指标反映的就是真实排队数（不含正在执行的那一个）。
 
 ### SSE 事件流
 
@@ -272,7 +279,7 @@ await Bun.build({
 
 | 决策 | 备选方案 | 选择理由 |
 | --- | --- | --- |
-| 读取走文件系统，不走 `scoop list/search` | 解析 CLI 文本输出 | 文本格式不稳定，解析随版本失效；文件系统读取快且结构化 |
+| 读取走文件系统，不走 `scoop list/search` | 解析 CLI 文本输出 | 文本格式不稳定，解析随版本失效；文件系统读取快且结构化。**例外**：已安装页提供「原始清单」入口执行 `scoop list` 并把输出原样打进任务日志（只展示、不解析），供两者对不上时对照上游 |
 | 前端 Alpine.js 本地内置，零构建 | Vue/React + 打包器 | 无构建步骤 = 改完刷新即生效；单文件 exe 体积可控；离线可用 |
 | 自研任务队列与日志缓冲 | 引入现有日志/队列库 | 需求简单（约 200 行），避免重依赖与类型冲突 |
 | 参数转义 + 白名单正则，绝不 `shell: true` | 拼接命令字符串 | 从根上消除命令注入风险 |
@@ -289,11 +296,11 @@ await Bun.build({
 
 | 想做的事 | 改动位置 |
 | --- | --- |
-| 新增一个 scoop 操作 | `routes/*` 加路由 → `services/*` 组装参数 → `startJob(...)` 创建任务；前端在对应 view 里调用 |
+| 新增一个 scoop 操作 | `routes/*` 加路由 → `scoop-core/*` 调用 → `startJob(...)` 创建任务；前端在对应 view 里调用 |
 | 新增任务类型文案 / 颜色 | `jobs/types.ts` 的 `JobKind` + `public/js/format.js` 的 `JOB_KIND_LABEL` |
 | 新增前端页面 | `public/index.html` 加 `<section class="view">` + `public/js/views/*.js` + `public/js/main.js` 的 `NAV_ITEMS` 与 `loadView` |
 | 调整主题 | `public/css/style.css` 顶部的 `:root` 设计令牌 |
-| 调整超时 / 并发策略 | `services/scoop-runner.ts` 的 `RunOptions` 与各路由传入的 `timeoutMs` |
+| 调整超时 / 并发策略 | `scoop-core/runner.ts` 的 `RunOptions` 与各路由传入的 `timeoutMs` |
 | 调整日志缓冲上限 | `jobs/manager.ts` 的缓冲容量常量 |
 | 新增桌面端托盘项 | `desktop/src/tray.rs` 的菜单构建与事件匹配 |
 
@@ -324,7 +331,7 @@ await Bun.build({
 
 ### 分层约束
 
-传输差异**只允许出现在两层**：`src/modes/` 与 `src/server/adapter.*.ts`。`routes/`、`services/`、`jobs/`、`server/app.ts` 对传输方式零感知 —— 机械判据是：全仓库搜索 `rpc` 只应命中 `index.ts`、`modes/desktop.ts`、`server/adapter.ipc.ts`、`config.ts`、`runtime.ts`、`utils/logger.ts` 六个文件。
+传输差异**只允许出现在两层**：`src/modes/` 与 `src/server/adapter.*.ts`。`routes/`、`scoop-core/`、`jobs/`、`server/app.ts` 对传输方式零感知 —— 机械判据是：全仓库搜索 `rpc` 只应命中 `index.ts`、`modes/desktop.ts`、`server/adapter.ipc.ts`、`config.ts`、`runtime.ts`、`utils/logger.ts` 六个文件。
 
 ### IPC 帧格式
 

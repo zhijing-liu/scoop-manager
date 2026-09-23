@@ -85,6 +85,7 @@ export const JOB_KIND_LABEL = {
   'scoop.export': '导出',
   'scoop.import': '导入',
   'app.install': '安装应用',
+  'app.status': '检查更新状态',
   'app.uninstall': '卸载应用',
   'app.update': '更新应用',
   'app.hold': '锁定',
@@ -102,6 +103,18 @@ export const JOB_KIND_LABEL = {
 
 export function jobKindLabel(kind) {
   return JOB_KIND_LABEL[kind] ?? kind ?? '任务';
+}
+
+/**
+ * 只放行 http(s) 外链，其余一律返回空串。
+ *
+ * homepage / bucket source 都来自第三方内容（bucket manifest、git remote），
+ * 直接绑到 href 上时 `javascript:`、`data:` 这类伪协议会让点击行为完全脱离预期。
+ * 返回空串后，调用方用同一个函数控制 x-show，把不可用的链接整体隐藏。
+ */
+export function externalUrl(value) {
+  const text = String(value ?? '').trim();
+  return /^https?:\/\//i.test(text) ? text : '';
 }
 
 /** 应用/仓库名着色，让列表更有辨识度又不引入随机性 */

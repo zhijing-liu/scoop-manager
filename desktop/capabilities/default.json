@@ -1,7 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "最小权限：页面只需要事件监听（SSE 分块由 Rust 通过事件推送）。进程管理、文件打开等能力全部在 Rust 侧完成，不对前端开放。",
+  "description": "前端只拿最小子集：事件监听（SSE 分块由 Rust 推送），以及自定义标题栏所需的窗口控制。进程管理与文件打开能力仍不对外暴露；打开外部链接走应用自定义命令 open_external（Rust 侧只放行 http/https）。",
   "windows": ["main"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:window:allow-is-maximized"
+  ]
 }

@@ -5,8 +5,8 @@
 import { Hono } from 'hono';
 import { envelope } from '../server/errors.js';
 import { assertName, toInteger } from '../utils/validate.js';
-import { manifestIndex, type ManifestEntry } from '../services/manifest-index.js';
-import { bucketNamesCached } from '../services/bucket-service-internal.js';
+import { manifestIndex, type ManifestEntry } from '../scoop-core/manifest.js';
+import { bucketNamesCached } from '../scoop-core/bucket-internal.js';
 
 export const searchRoutes = new Hono();
 
@@ -96,7 +96,7 @@ searchRoutes.get('/search/app/:name', async (c) => {
     return c.json(envelope({ name, found: false, entries: [], dependencies: [] }));
   }
 
-  const { installedApps } = await import('../services/installed-apps.js');
+  const { installedApps } = await import('../scoop-core/installed.js');
   const installedNames = new Set((await installedApps.list()).map((app) => app.name.toLowerCase()));
 
   return c.json(

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Scoop 安装器。
  *
  * 通过官方安装脚本（get.scoop.sh）完成安装，全程把输出接入任务系统，
@@ -14,13 +14,13 @@
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { AppError } from '../server/errors.js';
+import { AppError } from './errors.js';
 import { exists, isDirectory, ensureDir } from '../utils/fsx.js';
-import { createLogger } from '../utils/logger.js';
-import { detectScoop, invalidateScoopEnvironment, setScoopRoot, type ScoopEnvironment } from './scoop-locator.js';
-import { buildProxyEnv, buildProxyPreamble, isUsableProxy, normalizeProxyUrl } from './proxy-service.js';
+import { createLogger } from './logger.js';
+import { detectScoop, invalidateScoopEnvironment, setScoopRoot, type ScoopEnvironment } from './locator.js';
+import { buildProxyEnv, buildProxyPreamble, isUsableProxy, normalizeProxyUrl } from './proxy.js';
 import { psQuote } from './powershell.js';
-import { run, runOrThrow } from './scoop-runner.js';
+import { run, runOrThrow } from './runner.js';
 import { toAbsolute } from '../utils/paths.js';
 
 const logger = createLogger('installer');
@@ -95,7 +95,6 @@ export async function installScoop(options: InstallScoopOptions): Promise<Instal
   const result = await run({
     script: lines.join('; '),
     label: '安装 Scoop',
-    jobId: options.jobId,
     serial: true,
     timeoutMs: 10 * 60 * 1000,
     // 环境变量交给 git / aria2（克隆 bucket 与后续下载都要走）
@@ -139,7 +138,6 @@ export async function installScoop(options: InstallScoopOptions): Promise<Instal
         label: 'scoop config proxy',
         timeoutMs: 60_000,
         serial: true,
-        jobId: options.jobId,
         onLine: (stream, line) => options.onLine?.(stream, line),
       });
       options.onLine?.('system', '已把该代理同步到 scoop config，后续 scoop 命令同样生效。');

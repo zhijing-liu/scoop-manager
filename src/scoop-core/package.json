@@ -1,0 +1,23 @@
+{
+  "name": "scoop-core",
+  "version": "0.1.0",
+  "description": "Framework-agnostic Scoop package manager operations: locator, runner, options registry, high-level client. Works without Hono / IPC / jobs / desktop shell.",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "*.js",
+    "*.d.ts",
+    "*.ts"
+  ],
+  "license": "MIT"
+}

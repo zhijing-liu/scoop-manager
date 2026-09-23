@@ -1,22 +1,23 @@
 /**
  * Scoop 命令执行器。
  *
- * 这是整个后端唯一真正"驱动外部世界"的出口之一（另一个是文件扫描）。
+ * 这是 scoop-core 唯一真正"驱动外部世界"的出口（另一个是文件扫描）。
  *
  * 关键设计：
  *   - 绝不使用 shell:true。参数以 argv 数组交给 spawn，由 Node/Bun 负责
  *     Windows 命令行转义；PowerShell 侧再用单引号字面量二次包裹。
  *   - 变更类操作默认进入串行队列，避免 scoop 并发损坏。
  *   - 支持流式逐行回调、超时、取消（杀整棵进程树）。
+ *   - 与 jobs 子系统解耦：run() 只接受 cancelRequested / cancelHandler 回调，
+ *     队列则在本模块内部提供默认实现，调用方也可传入自己的 queue.run。
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { jobManager } from '../jobs/manager.js';
-import { mutationQueue } from '../jobs/queue.js';
-import { AppError } from '../server/errors.js';
-import { createLogger } from '../utils/logger.js';
+import { AppError } from './errors.js';
+import { createLogger } from './logger.js';
 import { buildRawCommand, buildScriptCommand, killProcessTree, powerShellArgs, requirePowerShell } from './powershell.js';
-import { requireScoopEnvironment } from './scoop-locator.js';
+import { requireScoopEnvironment } from './locator.js';
+import { SerialQueue, mutationQueue } from './queue.js';
 
 const logger = createLogger('runner');
 
@@ -33,14 +34,26 @@ export interface RunOptions {
   serial?: boolean;
   /** 超时毫秒数，默认 30 分钟 */
   timeoutMs?: number;
-  /** 关联的任务 ID，用于注册取消回调 */
-  jobId?: string;
   /** 额外注入的环境变量 */
   env?: Record<string, string>;
   /** 逐行输出回调 */
   onLine?: (stream: OutputStream, line: string) => void;
   /** 覆盖工作目录 */
   cwd?: string;
+  /** 可选：外部提供的串行队列（默认使用全局 mutationQueue） */
+  queue?: Pick<SerialQueue, 'run'>;
+  /**
+   * 可选：外部注入的「取消探测」函数。
+   * 在排队期间和进程启动前都会被轮询；返回 true 表示调用方已请求取消，
+   * runner 会短路并在不产生副作用的前提下立即返回 canceled。
+   */
+  cancelRequested?: () => boolean;
+  /**
+   * 可选：外部注入的「注册取消处理器」函数。
+   * runner 会在拿到真实进程句柄后调用它，让调用方可以把 cancel 函数挂到自己的
+   * 任务系统上；进程结束时再以 null 清理。
+   */
+  setCancelHandler?: (handler: (() => void) | null) => void;
 }
 
 export interface RunResult {
@@ -197,7 +210,7 @@ function startProcess(script: string, options: RunOptions, env: Record<string, s
 export async function run(options: RunOptions): Promise<RunResult> {
   const execute = async (): Promise<RunResult> => {
     // 排队期间被取消：直接短路，不产生任何副作用
-    if (options.jobId && jobManager.isCancelRequested(options.jobId)) {
+    if (options.cancelRequested?.()) {
       options.onLine?.('system', '任务在排队期间已被取消。');
       return { code: null, stdout: '', stderr: '', canceled: true, timedOut: false, durationMs: 0 };
     }
@@ -215,20 +228,31 @@ export async function run(options: RunOptions): Promise<RunResult> {
       script = buildScriptCommand(scoopEnv.scriptPath, options.args ?? []);
     }
 
+    // 上面这段是 execute() 里唯一的挂起点。取消请求若正好落在这里，
+    // jobManager 会因为 setCancelHandler 还没注册而把任务直接判成 canceled，
+    // 但进程随后照样起来跑到结束 —— 界面显示"已取消"，磁盘却真的被改了。
+    // 下面到 setCancelHandler 之间没有任何 await（JS 单线程不会在这里被切入），
+    // 所以补这一次检查就足以关掉整个窗口。
+    if (options.cancelRequested?.()) {
+      options.onLine?.('system', '任务在启动前已被取消。');
+      return { code: null, stdout: '', stderr: '', canceled: true, timedOut: false, durationMs: 0 };
+    }
+
     logger.debug(`执行: ${options.label}`);
     const handle = startProcess(script, options, env);
-    if (options.jobId) {
-      jobManager.setCancelHandler(options.jobId, handle.cancel);
+    if (options.setCancelHandler) {
+      options.setCancelHandler(handle.cancel);
     }
     try {
       return await handle.result;
     } finally {
-      if (options.jobId) jobManager.setCancelHandler(options.jobId, null);
+      if (options.setCancelHandler) options.setCancelHandler(null);
     }
   };
 
   if (options.serial === false) return execute();
-  return mutationQueue.run(options.label, execute);
+  const queue = options.queue ?? mutationQueue;
+  return queue.run(options.label, execute);
 }
 
 /** 便捷包装：执行后校验退出码，失败时抛出带 stderr 摘要的错误。 */

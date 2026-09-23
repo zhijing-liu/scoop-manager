@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Bucket manifest 索引。
  *
  * 为什么不用 `scoop search`：
@@ -13,9 +13,9 @@
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
-import { createLogger } from '../utils/logger.js';
+import { createLogger } from './logger.js';
 import { dirStamp, listDirs, listFiles } from '../utils/fsx.js';
-import { detectScoop } from './scoop-locator.js';
+import { detectScoop } from './locator.js';
 
 const logger = createLogger('manifest');
 
@@ -112,14 +112,28 @@ class ManifestIndex {
 
   invalidate(): void {
     this.stamp = '';
+    // 必须同时清掉 builtAt：`<root>/buckets` 为空时 computeStamp() 返回的也是 ''，
+    // 若只清 stamp，下一次 ensure() 会命中 `currentStamp === this.stamp` 直接返回，
+    // 于是删掉最后一个 bucket 之后，搜索结果里仍然留着它带来的应用。
+    this.builtAt = null;
     this.lastStampCheck = 0;
     logger.info('索引已标记失效');
   }
 
   /** 确保索引可用；必要时重建。 */
   async ensure(force = false): Promise<void> {
+    // 守卫要在第一个 await 之前登记：否则并发调用会各自通过检查，
+    // 冷启动时（/search 与 /overview 同时打进来）重复做整轮全量扫描。
     if (this.building) return this.building;
 
+    const pending = this.rebuildIfNeeded(force).finally(() => {
+      if (this.building === pending) this.building = null;
+    });
+    this.building = pending;
+    return pending;
+  }
+
+  private async rebuildIfNeeded(force: boolean): Promise<void> {
     const env = await detectScoop();
     if (!env.installed || !env.root) {
       this.entries = [];
@@ -139,10 +153,7 @@ class ManifestIndex {
       return;
     }
 
-    this.building = this.build(env.root, currentStamp).finally(() => {
-      this.building = null;
-    });
-    return this.building;
+    await this.build(env.root, currentStamp);
   }
 
   private async build(root: string, stamp: string): Promise<void> {

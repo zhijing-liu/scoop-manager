@@ -12,7 +12,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { AppError, envelope } from '../server/errors.js';
 import { jobManager } from '../jobs/manager.js';
-import { mutationQueue } from '../jobs/queue.js';
+import { mutationQueue } from '../scoop-core/queue.js';
 import { toInteger } from '../utils/validate.js';
 import type { JobEvent, JobKind, JobStatus } from '../jobs/types.js';
 import { createLogger } from '../utils/logger.js';
@@ -31,7 +31,7 @@ jobRoutes.get('/jobs', (c) => {
     envelope({
       items: jobManager.list({ status, kind, limit }),
       running: jobManager.runningCount(),
-      queued: mutationQueue.pending,
+      queued: mutationQueue.queued,
     }),
   );
 });
@@ -129,6 +129,9 @@ jobRoutes.get('/jobs/:id/events', (c) => {
             }),
             stream.sleep(HEARTBEAT_MS),
           ]);
+          // race 结束后 wake 可能仍指向已 settle 的 resolver（心跳先醒时），
+          // 立刻清空：后续 notify 不会再调到这个 no-op，状态也更明确。
+          wake = null;
           if (closed) break;
           if (pending.length === 0) {
             if (jobManager.isTerminal(id)) break;

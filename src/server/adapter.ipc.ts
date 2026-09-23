@@ -84,11 +84,17 @@ function writeFrame(header: OutHeader, body?: Uint8Array): boolean {
   prefix.writeUInt32BE(headerBytes.length, 0);
 
   const out = process.stdout;
+  let ok = true;
+  // uncork 必须放在 finally：中途 write 抛错时若不 uncork，stdout 会永久
+  // 停留在 corked 状态，后续所有帧都被憋在缓冲区发不出去。
   out.cork();
-  out.write(prefix);
-  out.write(headerBytes);
-  const ok = body && body.length > 0 ? out.write(body) : true;
-  out.uncork();
+  try {
+    out.write(prefix);
+    out.write(headerBytes);
+    if (body && body.length > 0) ok = out.write(body);
+  } finally {
+    out.uncork();
+  }
   return ok;
 }
 
@@ -113,6 +119,9 @@ interface IncomingFrame {
  * 这里不做流式 yield，而是 push 返回本次能完整解出的帧数组，逻辑更直观。
  */
 class FrameReader {
+  /** 超过该尺寸的 body 单独拷贝一份，与读缓冲脱钩 */
+  private static readonly COPY_BODY_THRESHOLD = 64 * 1024;
+
   private buffer: Buffer = Buffer.alloc(0);
 
   push(chunk: Buffer): IncomingFrame[] {
@@ -145,7 +154,14 @@ class FrameReader {
       if (this.buffer.length < 4 + headerLength + bodyLength) break;
 
       const bodyStart = 4 + headerLength;
-      frames.push({ header, body: this.buffer.subarray(bodyStart, bodyStart + bodyLength) });
+      let body = this.buffer.subarray(bodyStart, bodyStart + bodyLength);
+      // subarray 是共享底层内存的视图：并发处理多个帧时，大 body 视图会把整块
+      // 读缓冲（含同一批的其他帧）钉在内存里直到 handler 完成。大 body 主动拷贝
+      // 一份断链，小 body 保持零拷贝。
+      if (bodyLength > FrameReader.COPY_BODY_THRESHOLD) {
+        body = Buffer.from(body);
+      }
+      frames.push({ header, body });
       this.buffer = this.buffer.subarray(bodyStart + bodyLength);
     }
 
@@ -154,6 +170,41 @@ class FrameReader {
 }
 
 // ---------------------------------------------------------------- 请求处理
+
+/**
+ * 并发上限。
+ *
+ * IPC 请求虽然全部来自本机外壳，但外壳可能在短时间内突发大量请求（列表刷新、
+ * 搜索、批量操作）。Hono 处理器中的 JSON 序列化、磁盘扫描是 CPU 密集型工作，
+ * 不加限制会把事件循环打爆，反而让 SSE 日志推送卡顿。
+ *
+ * 槽位只覆盖"处理器执行"阶段（拿到 Response 即释放），不覆盖 SSE 后续的 chunk
+ * 泵送：长连接可能挂几十分钟，把它们计入槽位会让普通请求被几条日志流饿死；
+ * chunk 泵送本身已有 stdout 背压（drain）保护。
+ */
+const MAX_CONCURRENT_HANDLERS = 32;
+let activeHandlers = 0;
+const handlerWaiters: Array<() => void> = [];
+
+function acquireHandlerSlot(): Promise<void> {
+  if (activeHandlers < MAX_CONCURRENT_HANDLERS) {
+    activeHandlers += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    handlerWaiters.push(resolve);
+  });
+}
+
+function releaseHandlerSlot(): void {
+  const next = handlerWaiters.shift();
+  if (next) {
+    // 直接交接槽位：计数不变，唤醒等待者
+    next();
+  } else {
+    activeHandlers -= 1;
+  }
+}
 
 async function handleRequest(
   handler: (request: Request) => Response | Promise<Response>,
@@ -166,13 +217,18 @@ async function handleRequest(
 
   let response: Response;
   try {
-    response = await handler(
-      new Request(new URL(header.path ?? '/', VIRTUAL_ORIGIN), {
-        method,
-        headers: header.headers ?? {},
-        ...(hasBody ? { body: frame.body } : {}),
-      }),
-    );
+    await acquireHandlerSlot();
+    try {
+      response = await handler(
+        new Request(new URL(header.path ?? '/', VIRTUAL_ORIGIN), {
+          method,
+          headers: header.headers ?? {},
+          ...(hasBody ? { body: frame.body } : {}),
+        }),
+      );
+    } finally {
+      releaseHandlerSlot();
+    }
   } catch (error) {
     writeFrame({ type: 'error', id, message: (error as Error).message });
     return;
@@ -201,7 +257,12 @@ async function handleRequest(
           if (!ok) await drain();
         }
       } catch (error) {
-        logger.debug(`SSE 转发中断: ${(error as Error).message}`);
+        // 不能用 end 收尾：外壳无法区分"正常结束"与"中途断裂"，前端会以为
+        // 日志完整。error 帧会被 bridge.rs 转成 rpc:error 事件（shim 已监听）。
+        const message = `SSE 转发中断：${(error as Error).message}`;
+        logger.debug(message);
+        writeFrame({ type: 'error', id, message });
+        return;
       }
     }
 
@@ -209,7 +270,15 @@ async function handleRequest(
     return;
   }
 
-  const bytes = response.body ? Buffer.from(await response.arrayBuffer()) : Buffer.alloc(0);
+  let bytes: Buffer;
+  try {
+    bytes = response.body ? Buffer.from(await response.arrayBuffer()) : Buffer.alloc(0);
+  } catch (error) {
+    // 异常若从这里逸出会变成未处理的 Promise 拒绝：外壳收不到任何帧，
+    // 只能一路等到 120 秒请求超时，且用户看不到任何原因。
+    writeFrame({ type: 'error', id, message: `读取响应体失败：${(error as Error).message}` });
+    return;
+  }
   writeFrame({ type: 'response', id, status: response.status, headers, bodyLength: bytes.length, stream: false }, bytes);
 }
 

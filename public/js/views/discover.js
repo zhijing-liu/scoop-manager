@@ -9,31 +9,69 @@ import { api, errorMessage } from '../api.js';
 import { formatNumber } from '../format.js';
 
 export function createDiscover(shell) {
+  // 请求序号：输入即搜（debounce）与"连点两个应用"都可能让先发的请求后返回，
+  // 用序号丢弃过期响应，避免旧结果覆盖新结果。
+  let searchSeq = 0;
+  let panelSeq = 0;
+
   return {
     query: '',
     bucket: '',
     loading: false,
     searching: false,
+    error: '',
     results: [],
     total: 0,
     took: 0,
     indexStats: null,
     bucketsList: [],
+    /** 已安装应用名（小写），用于在搜索结果里标注「已安装」 */
+    installedNames: [],
 
     /** 「来源 Bucket」下拉的选项：列表是动态的，因此做成 getter 保持响应式 */
     get bucketOptions() {
       return [{ value: '', label: '全部' }, ...this.bucketsList.map((name) => ({ value: name, label: name }))];
     },
 
-    /** 「指定架构」下拉的选项 */
-    archOptions: [
-      { value: '', label: '自动（推荐）' },
-      { value: '64bit', label: '64bit' },
-      { value: '32bit', label: '32bit' },
-      { value: 'arm64', label: 'arm64' },
-    ],
+    /**
+     * 安装命令定义，来自后端 `GET /api/scoop/options`（`scoop-core/options.ts` 是唯一数据源）。
+     * 面板渲染、默认值与「将执行的命令」预览全部由它推导，
+     * 前端不再手写一份选项列表 —— 否则后端改了短选项，界面上的预览仍会是旧的。
+     */
+    installDef: null,
     refreshingIndex: false,
     searched: false,
+
+    /** 安装选项定义（boolean 渲染成开关，select 渲染成自绘下拉） */
+    get optionDefs() {
+      return this.installDef?.options ?? [];
+    },
+
+    /** 面板用：按类型分组，模板直接 x-for 渲染（顺序与注册表一致） */
+    get booleanOptionDefs() {
+      return this.optionDefs.filter((opt) => opt.type === 'boolean');
+    },
+
+    get selectOptionDefs() {
+      return this.optionDefs.filter((opt) => opt.type === 'select');
+    },
+
+    /** 选项的短选项展示（-g / --global） */
+    flagLabel(opt) {
+      if (!opt) return '';
+      if (opt.short) return `-${opt.short}`;
+      if (opt.long) return `--${opt.long}`;
+      return '';
+    },
+
+    /** 按注册表默认值构造一份全新的 options，保证 payload 字段与后端一一对应 */
+    defaultOptions() {
+      const options = {};
+      for (const opt of this.optionDefs) {
+        options[opt.key] = opt.type === 'boolean' ? opt.default === true : typeof opt.default === 'string' ? opt.default : '';
+      }
+      return options;
+    },
 
     panel: {
       open: false,
@@ -41,25 +79,50 @@ export function createDiscover(shell) {
       deps: [],
       depsLoading: false,
       error: '',
-      options: { global: false, independent: false, skipHash: false, noCache: false, arch: '' },
+      // 在 openInstallPanel 里按注册表默认值重建
+      options: {},
     },
 
     async load() {
       this.loading = this.results.length === 0;
+      this.error = '';
       try {
-        await Promise.all([this.loadBuckets(), this.ensureIndex()]);
+        await Promise.all([this.loadBuckets(), this.ensureIndex(), this.loadInstalledNames(), this.loadOptionDefs()]);
         if (this.searched && this.query.trim().length >= 1) await this.search();
       } catch (error) {
+        this.error = errorMessage(error);
         shell.toast(errorMessage(error), 'danger');
       } finally {
         this.loading = false;
       }
     },
 
+    /** 拉取安装命令定义（失败不影响搜索，退化成"无选项"，后端按默认值处理） */
+    async loadOptionDefs() {
+      try {
+        const defs = await api.get('/scoop/options');
+        this.installDef = Array.isArray(defs) ? defs.find((item) => item.key === 'install') ?? null : null;
+      } catch {
+        this.installDef = null;
+      }
+    },
+
+    /** 已安装清单：搜索结果里标注「已安装」用（失败不影响搜索本身） */
+    async loadInstalledNames() {
+      try {
+        const data = await api.get('/apps');
+        this.installedNames = Array.isArray(data.items)
+          ? data.items.map((item) => String(item?.name ?? '').toLowerCase())
+          : [];
+      } catch {
+        this.installedNames = [];
+      }
+    },
+
     async loadBuckets() {
       try {
         const data = await api.get('/buckets');
-        this.bucketsList = (data.items ?? []).map((item) => item.name);
+        this.bucketsList = Array.isArray(data.items) ? data.items.map((item) => item?.name ?? '').filter(Boolean) : [];
       } catch {
         // bucket 列表失败不影响搜索
       }
@@ -69,6 +132,7 @@ export function createDiscover(shell) {
       try {
         this.indexStats = await api.get('/search/index');
       } catch (error) {
+        this.error = errorMessage(error);
         shell.toast(errorMessage(error), 'danger');
       }
     },
@@ -88,6 +152,7 @@ export function createDiscover(shell) {
     },
 
     async search() {
+      const seq = ++searchSeq;
       const keyword = this.query.trim();
       this.searched = true;
       this.searching = true;
@@ -97,7 +162,8 @@ export function createDiscover(shell) {
         if (this.bucket) params.set('bucket', this.bucket);
         params.set('limit', '80');
         const data = await api.get(`/search?${params.toString()}`);
-        this.results = data.items ?? [];
+        if (seq !== searchSeq) return; // 已经有更新的搜索发出，丢弃这批过期结果
+        this.results = Array.isArray(data.items) ? data.items : [];
         this.total = data.total ?? 0;
         this.took = data.took ?? 0;
         this.indexStats = data.index ?? this.indexStats;
@@ -105,9 +171,10 @@ export function createDiscover(shell) {
           this.bucketsList = data.buckets;
         }
       } catch (error) {
+        if (seq !== searchSeq) return;
         shell.toast(errorMessage(error), 'danger');
       } finally {
-        this.searching = false;
+        if (seq === searchSeq) this.searching = false;
       }
     },
 
@@ -124,8 +191,8 @@ export function createDiscover(shell) {
       if (this.query.trim()) void this.search();
     },
 
-    get installedNames() {
-      return new Set((shell.counts ? [] : []).concat([]));
+    isInstalled(name) {
+      return this.installedNames.includes(String(name ?? '').toLowerCase());
     },
 
     get indexReady() {
@@ -145,25 +212,32 @@ export function createDiscover(shell) {
     // ---------------------------------------------------------------- 安装面板
 
     async openInstallPanel(app) {
+      const seq = ++panelSeq;
       this.panel = {
         open: true,
         app,
         deps: [],
         depsLoading: true,
         error: '',
-        options: { global: false, independent: false, skipHash: false, noCache: false, arch: '' },
+        // 每打开一个应用都重置选项，避免不同应用之间残留状态
+        options: this.defaultOptions(),
       };
       try {
         const data = await api.get(`/search/app/${encodeURIComponent(app.name)}`);
-        this.panel.deps = data.dependencies ?? [];
+        // 快速切换两个应用时，前一次的依赖响应可能后到并把新面板的依赖覆盖掉
+        if (seq !== panelSeq) return;
+        this.panel.deps = Array.isArray(data.dependencies) ? data.dependencies : [];
       } catch (error) {
+        if (seq !== panelSeq) return;
         this.panel.error = errorMessage(error);
       } finally {
-        this.panel.depsLoading = false;
+        if (seq === panelSeq) this.panel.depsLoading = false;
       }
     },
 
     closeInstallPanel() {
+      // 让仍在路上的依赖请求作废
+      panelSeq += 1;
       if (this.panel.open) this.panel = { ...this.panel, open: false };
     },
 
@@ -184,6 +258,26 @@ export function createDiscover(shell) {
 
     get missingDeps() {
       return this.panel.deps.filter((item) => item.missing);
+    },
+
+    /**
+     * 根据当前 options 生成"将执行的命令"预览（纯字符串，不调用后端）。
+     * 规则与后端 buildFlags() 完全一致：boolean 仅在 true 时出 flag，
+     * select 仅在值为非空字符串时输出 `flag value`。
+     */
+    get installCommandPreview() {
+      const app = this.panel.app ? this.panel.app.name : '<app>';
+      if (!this.installDef) return `scoop install ${app}`;
+      const flags = [];
+      for (const opt of this.optionDefs) {
+        const value = this.panel.options[opt.key];
+        if (opt.type === 'boolean') {
+          if (value === true) flags.push(this.flagLabel(opt));
+        } else if (typeof value === 'string' && value.length > 0) {
+          flags.push(this.flagLabel(opt), value);
+        }
+      }
+      return ['scoop', this.installDef.literal || 'install', ...flags, app].filter(Boolean).join(' ');
     },
   };
 }

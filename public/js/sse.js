@@ -16,6 +16,11 @@ import { appUrl } from './base.js';
  */
 export function openJobStream(jobId, handlers = {}) {
   const { onEvent, onState, since = 0 } = handlers;
+  /**
+   * 重连次数上限。指数退避到 8s 后，超过这个次数仍然连不上就放弃，
+   * 避免任务已被清理（404）时无限重连、把控制台和网络面板刷满。
+   */
+  const MAX_ATTEMPTS = 15;
   let lastSeq = since;
   let attempts = 0;
   let closed = false;
@@ -91,10 +96,16 @@ export function openJobStream(jobId, handlers = {}) {
     });
 
     source.onerror = () => {
+      // readyState=CLOSED 表示浏览器已判定这条连接不可恢复（例如 404、
+      // 响应不是 text/event-stream），这类情况重试没有意义。
+      const fatal = !source || source.readyState === 2;
       cleanup();
       if (closed) return;
       attempts += 1;
-      // 404 等确定性错误不必无限重试，但保持有限次尝试更健壮
+      if (fatal || attempts > MAX_ATTEMPTS) {
+        close();
+        return;
+      }
       const delay = Math.min(8000, 400 * 2 ** Math.min(attempts, 5));
       onState?.('reconnecting');
       timer = setTimeout(connect, delay);

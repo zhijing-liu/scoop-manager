@@ -13,9 +13,9 @@ import {
   readConfig,
   testProxy,
   validateProxyInput,
-} from '../services/config-service.js';
-import { readEffectiveProxy, setManagerProxy } from '../services/proxy-service.js';
-import { detectScoop } from '../services/scoop-locator.js';
+} from '../scoop-core/config.js';
+import { readEffectiveProxy, setManagerProxy } from '../scoop-core/proxy.js';
+import { detectScoop } from '../scoop-core/locator.js';
 
 export const configRoutes = new Hono();
 

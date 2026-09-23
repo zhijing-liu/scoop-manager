@@ -15,7 +15,7 @@ import { JOBS_FILE, ensureDataDir } from '../config.js';
 import { readJson, writeJson } from '../utils/fsx.js';
 import { createLogger } from '../utils/logger.js';
 import { AppError } from '../server/errors.js';
-import { isTerminalStatus, type JobDetail, type JobError, type JobEvent, type JobKind, type JobStatus, type JobSummary, type LogStream } from './types.js';
+import { isTerminalStatus, type JobDetail, type JobError, type JobEvent, type JobKind, type JobRequest, type JobStatus, type JobSummary, type LogStream } from './types.js';
 
 const logger = createLogger('jobs');
 
@@ -25,12 +25,16 @@ const MAX_EVENTS_PER_JOB = 2000;
 const MAX_HISTORY = 200;
 /** 持久化时每个任务保留的日志行数 */
 const PERSIST_LOG_TAIL = 200;
+/** 运行中任务的快照落盘间隔：崩溃恢复时最多丢失这段时间的日志 */
+const ACTIVE_CHECKPOINT_MS = 10_000;
 
 interface InternalJob {
   summary: JobSummary;
   events: JobEvent[];
   /** 被环形缓冲裁掉的事件上界（events[0].seq - 1） */
   trimmedBelow: number;
+  /** 被环形缓冲裁掉的日志条数（只统计 log 事件，供 detail().truncated 精确判断） */
+  trimmedLogs: number;
   listeners: Set<(event: JobEvent) => void>;
   cancelHandler: (() => void) | null;
   cancelRequested: boolean;
@@ -41,6 +45,42 @@ export interface CreateJobInput {
   title: string;
   target?: string | null;
   canCancel?: boolean;
+  /** 原始请求快照：只有需要提供「一键重试」的任务才传 */
+  request?: JobRequest | null;
+}
+
+/**
+ * 请求快照的体积上限。
+ *
+ * 快照会被写进 jobs.json（并且每次运行中任务落盘都会重写一遍），
+ * 所以体积极大的请求（例如带整份 Scoopfile 的导入）不留重试入口，
+ * 免得几 MB 的 body 被反复写盘。
+ */
+const MAX_REQUEST_BYTES = 16 * 1024;
+
+/**
+ * 落盘前收敛请求快照。
+ *
+ * jobs.json 在用户目录里、且 hydrate 会把它原样恢复，因此这里把它当不可信输入：
+ * 只接受形如 `/api/...` 的路径（拒绝 `..`），体积或可序列化性不达标的直接丢弃 ——
+ * 丢弃的后果只是"没有重试按钮"，不影响任务本身。
+ */
+function sanitizeRequest(request?: JobRequest | null): JobRequest | null {
+  if (!request || typeof request.path !== 'string') return null;
+  if (!request.path.startsWith('/api/') || request.path.includes('..')) return null;
+
+  const method = String(request.method ?? 'POST').toUpperCase() as JobRequest['method'];
+  if (!['GET', 'POST', 'PUT', 'DELETE'].includes(method)) return null;
+
+  const body = request.body;
+  if (body === undefined) return { method, path: request.path };
+  try {
+    if (JSON.stringify(body).length > MAX_REQUEST_BYTES) return null;
+  } catch {
+    // 含循环引用等不可序列化的值：存不下来就不留重试入口
+    return null;
+  }
+  return { method, path: request.path, body };
 }
 
 export interface FinishJobInput {
@@ -53,9 +93,20 @@ class JobManager {
   private readonly jobs = new Map<string, InternalJob>();
   private unsubscribeAll = new Set<() => void>();
   private persistTimer: NodeJS.Timeout | null = null;
+  private checkpointTimer: NodeJS.Timeout | null = null;
 
   constructor() {
     this.hydrate();
+    // hydrate 会把崩溃前残留的 running/queued 任务改判为 failed，立刻回写一次：
+    // 否则在本次运行期间没有新任务时，磁盘上的旧状态会一直停留在 running。
+    this.persist();
+    // 周期性给运行中任务落盘快照。否则任务执行期间崩溃时，jobs.json 里
+    // 根本没有它的记录（persist 只在终态时触发），hydrate 的崩溃恢复逻辑
+    // （标记 INTERRUPTED）就永远不会生效。
+    this.checkpointTimer = setInterval(() => {
+      if (this.hasActiveJobs()) this.persist();
+    }, ACTIVE_CHECKPOINT_MS);
+    this.checkpointTimer.unref?.();
   }
 
   // ---------------------------------------------------------------- 创建与推进
@@ -74,12 +125,14 @@ class JobManager {
       exitCode: null,
       canCancel: input.canCancel !== false,
       error: null,
+      request: sanitizeRequest(input.request),
       seq: 0,
     };
     const internal: InternalJob = {
       summary,
       events: [],
       trimmedBelow: 0,
+      trimmedLogs: 0,
       listeners: new Set(),
       cancelHandler: null,
       cancelRequested: false,
@@ -87,6 +140,8 @@ class JobManager {
     this.jobs.set(summary.id, internal);
     this.emit(internal, { type: 'status', status: 'queued' });
     this.trimHistory();
+    // 排队期间崩溃也要能恢复：先落一次盘（调度去抖，与 start 的落盘合并）
+    this.schedulePersist();
     return { ...summary };
   }
 
@@ -95,6 +150,7 @@ class JobManager {
     job.summary.status = 'running';
     job.summary.startedAt = Date.now();
     this.emit(job, { type: 'status', status: 'running' });
+    this.schedulePersist();
   }
 
   log(jobId: string, stream: LogStream, text: string): void {
@@ -191,7 +247,8 @@ class JobManager {
       logs: job.events
         .filter((event) => event.type === 'log')
         .map((event) => ({ seq: event.seq, ts: event.ts, stream: event.stream ?? 'stdout', text: event.text ?? '' })),
-      truncated: job.trimmedBelow > 0,
+      // 只看日志裁剪：只被裁掉 status 事件时不应误报"更早日志已丢弃"
+      truncated: job.trimmedLogs > 0,
     };
   }
 
@@ -267,6 +324,9 @@ class JobManager {
     job.events.push(event);
     if (job.events.length > MAX_EVENTS_PER_JOB) {
       const overflow = job.events.length - MAX_EVENTS_PER_JOB;
+      for (let i = 0; i < overflow; i += 1) {
+        if (job.events[i]?.type === 'log') job.trimmedLogs += 1;
+      }
       job.events.splice(0, overflow);
       job.trimmedBelow = job.events[0] ? job.events[0].seq - 1 : job.trimmedBelow;
     }
@@ -299,20 +359,35 @@ class JobManager {
     this.persistTimer.unref?.();
   }
 
+  private hasActiveJobs(): boolean {
+    for (const job of this.jobs.values()) {
+      if (!isTerminalStatus(job.summary.status)) return true;
+    }
+    return false;
+  }
+
   private persist(): void {
     try {
       ensureDataDir();
-      const payload = Array.from(this.jobs.values())
+      const all = Array.from(this.jobs.values());
+      // 活动任务必须全部落盘：崩溃后 hydrate 要靠这些快照把任务标记为 INTERRUPTED。
+      // 终态任务只保留最近 MAX_HISTORY 条。
+      const active = all
+        .filter((job) => !isTerminalStatus(job.summary.status))
+        .sort((a, b) => b.summary.createdAt - a.summary.createdAt);
+      const terminal = all
         .filter((job) => isTerminalStatus(job.summary.status))
         .sort((a, b) => b.summary.createdAt - a.summary.createdAt)
-        .slice(0, MAX_HISTORY)
-        .map((job) => ({
-          summary: job.summary,
-          logs: job.events
-            .filter((event) => event.type === 'log')
-            .slice(-PERSIST_LOG_TAIL)
-            .map((event) => ({ stream: event.stream ?? 'stdout', text: event.text ?? '' })),
-        }));
+        .slice(0, MAX_HISTORY);
+
+      const payload = [...active, ...terminal].map((job) => ({
+        summary: job.summary,
+        trimmedLogs: job.trimmedLogs,
+        logs: job.events
+          .filter((event) => event.type === 'log')
+          .slice(-PERSIST_LOG_TAIL)
+          .map((event) => ({ stream: event.stream ?? 'stdout', text: event.text ?? '' })),
+      }));
       writeJson(JOBS_FILE, { version: 1, jobs: payload });
     } catch (error) {
       logger.warn(`任务历史持久化失败: ${(error as Error).message}`);
@@ -320,7 +395,13 @@ class JobManager {
   }
 
   private hydrate(): void {
-    const raw = readJson<{ jobs?: Array<{ summary: JobSummary; logs?: Array<{ stream: LogStream; text: string }> }> }>(JOBS_FILE);
+    const raw = readJson<{
+      jobs?: Array<{
+        summary: JobSummary;
+        trimmedLogs?: number;
+        logs?: Array<{ stream: LogStream; text: string }>;
+      }>;
+    }>(JOBS_FILE);
     if (!raw?.jobs || !Array.isArray(raw.jobs)) return;
     for (const entry of raw.jobs) {
       const summary = entry.summary;
@@ -336,6 +417,8 @@ class JobManager {
         summary: { ...summary, seq: 0, canCancel: false },
         events: [],
         trimmedBelow: 0,
+        // 崩溃前已被环形缓冲裁掉的日志数要延续，否则前端的"日志已截断"提示会丢失
+        trimmedLogs: Number.isFinite(entry.trimmedLogs) ? Number(entry.trimmedLogs) : 0,
         listeners: new Set(),
         cancelHandler: null,
         cancelRequested: false,
@@ -362,6 +445,10 @@ class JobManager {
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
+    }
+    if (this.checkpointTimer) {
+      clearInterval(this.checkpointTimer);
+      this.checkpointTimer = null;
     }
     this.persist();
   }

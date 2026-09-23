@@ -27,8 +27,9 @@ export function createConfigView(shell) {
       try {
         const [snapshot] = await Promise.all([api.get('/config'), this.loadKeys()]);
         this.snapshot = snapshot;
-        this.proxyInput = snapshot.proxy?.value ?? '';
-        this.proxyEditing = false;
+        // 输入框里还有未提交的编辑时不要回填服务端值：
+        // 后台任务结束触发的 load() 会把用户正在输入的内容直接冲掉。
+        if (!this.proxyEditing) this.proxyInput = snapshot.proxy?.value ?? '';
       } catch (error) {
         this.error = errorMessage(error);
       } finally {
@@ -223,6 +224,13 @@ export function createConfigView(shell) {
     },
 
     quickFill(meta) {
+      // 已设置过的键再点「设置」必须走编辑：走新增表单会在提交时
+      // 被"配置项已存在"挡下来，等于点了没反应。
+      const entry = this.entryOf(meta.key);
+      if (entry) {
+        this.openEdit(entry);
+        return;
+      }
       this.add = { open: true, key: meta.key, value: meta.suggestion ?? '', error: '', submitting: false };
     },
 

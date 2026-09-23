@@ -89,6 +89,16 @@ export function createApp(): Hono {
     logger.debug(`${c.req.method} ${path} -> ${c.res.status} (${duration}ms)`);
   });
 
+  // ---- API 一律禁止缓存
+  // /api/apps、/api/overview 等是固定 URL 的数据接口，若不带缓存策略，
+  // 浏览器（服务模式）会启用启发式缓存，直接用本地旧 JSON 应答、根本不发请求，
+  // 表现为「点刷新 / 重新扫描永远是旧数据」。桌面 IPC 模式虽走 stdio 不经缓存，
+  // 带头也无害。SSE 长连接同样不应被缓存。
+  app.use('/api/*', async (c, next) => {
+    await next();
+    c.header('Cache-Control', 'no-store');
+  });
+
   // ---- API
   app.route('/api', healthRoutes);
   app.route('/api', scoopRoutes);

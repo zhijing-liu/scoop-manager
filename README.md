@@ -272,7 +272,7 @@ scoop-manager/
 │   ├── runtime.ts            # 运行时信息（kind / transport / host / port）
 │   ├── server/               # Hono 应用组装、Bun/Node/IPC 适配器、静态资源、错误模型
 │   ├── routes/               # health / scoop / buckets / apps / search / config / jobs
-│   ├── services/             # scoop 定位、PowerShell、命令执行、manifest 索引、配置、缓存
+│   ├── scoop-core/           # 框架无关领域内核：locator / installer / runner / manifest / bucket / cache / config / proxy / powershell / client
 │   ├── jobs/                 # 任务契约、状态机 + 环形缓冲、串行队列、执行桥接
 │   └── utils/                # logger / validate / fsx / net / paths / parent-guard
 ├── public/                   # 前端（无构建步骤）

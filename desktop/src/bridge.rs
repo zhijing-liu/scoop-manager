@@ -198,6 +198,10 @@ pub struct Bridge {
     alive: AtomicBool,
     /// sidecar 是否已上报 ready 帧
     ready: AtomicBool,
+    /// 子进程代次：每次 attach 自增。
+    /// stdout 读取线程是独立线程，它的 EOF 回调可能晚于下一次 attach，
+    /// 用代次才能判断"我盯的那个进程是否还是当前进程"。
+    generation: AtomicU64,
 }
 
 impl Bridge {
@@ -208,6 +212,7 @@ impl Bridge {
             seq: AtomicU64::new(1),
             alive: AtomicBool::new(false),
             ready: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -215,10 +220,12 @@ impl Bridge {
         format!("r{}", self.seq.fetch_add(1, Ordering::Relaxed))
     }
 
-    pub fn attach(&self, child: Child) {
+    /// 接管一个新的子进程，返回它的代次。
+    pub fn attach(&self, child: Child) -> u64 {
         *self.child.lock().unwrap() = Some(child);
         self.alive.store(true, Ordering::SeqCst);
         self.ready.store(false, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     pub fn take_child(&self) -> Option<Child> {
@@ -238,6 +245,23 @@ impl Bridge {
         self.alive.store(false, Ordering::SeqCst);
         self.ready.store(false, Ordering::SeqCst);
         self.pending.lock().unwrap().clear();
+    }
+
+    /// 传入的代次是否仍是当前代次。
+    pub fn is_current(&self, generation: u64) -> bool {
+        self.generation.load(Ordering::SeqCst) == generation
+    }
+
+    /// 仅当代次未变时才标记死亡。
+    ///
+    /// 「重启服务」是 kill 旧进程 -> spawn 新进程，而旧进程的 stdout 读取线程是独立线程：
+    /// 它的 EOF 与 mark_dead 完全可能晚于新进程的 attach。若不加代次判断，
+    /// 旧线程会把刚起来的新进程置成 alive=false 并清空它已登记的在途请求，
+    /// 表现为重启后立刻提示「本地服务未在运行」。
+    pub fn mark_dead_if_current(&self, generation: u64) {
+        if self.is_current(generation) {
+            self.mark_dead();
+        }
     }
 
     /// 等待 sidecar 就绪。
@@ -304,16 +328,33 @@ impl Bridge {
                     // 前端在调用 api_stream_start 之前就注册好了监听，这里无需动作。
                     return;
                 }
-                if let Some(Pending::Once { reply }) = self.pending.lock().unwrap().remove(&id) {
-                    let packed = pack(
-                        &ReplyHeader {
-                            status,
-                            headers: &headers,
-                            body_length: body.len(),
-                        },
-                        &body,
-                    );
-                    let _ = reply.send(packed);
+
+                match self.pending.lock().unwrap().remove(&id) {
+                    Some(Pending::Once { reply }) => {
+                        let packed = pack(
+                            &ReplyHeader {
+                                status,
+                                headers: &headers,
+                                body_length: body.len(),
+                            },
+                            &body,
+                        );
+                        let _ = reply.send(packed);
+                    }
+                    // 流式请求收到了非流式响应：SSE 端点在建流之前就失败了
+                    //（典型情况：任务已被清理，路由直接返回 404 JSON）。
+                    // 必须转成 rpc:error 事件，否则垫片侧的 EventSource 既收不到 chunk、
+                    // 也收不到 end/error，会永远停在"已连接"，前端连重连都触发不了。
+                    Some(Pending::Stream) => {
+                        let text = String::from_utf8_lossy(&body).into_owned();
+                        let message = if text.trim().is_empty() {
+                            format!("流式请求失败（HTTP {status}）。")
+                        } else {
+                            text
+                        };
+                        let _ = app.emit(&format!("rpc:error:{id}"), message);
+                    }
+                    None => {}
                 }
             }
 

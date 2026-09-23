@@ -8,6 +8,13 @@
 import { api, errorMessage } from '../api.js';
 import { formatBytes, fromNow, formatNumber } from '../format.js';
 
+/**
+ * 导入 Scoopfile 的体积上限。
+ * 正常备份只有几十 KB；设上限是为了不把超大文件整个读进内存再 POST，
+ * 也避免 sidecar 收到病态大小的请求体。
+ */
+const SCOOPFILE_MAX_BYTES = 1024 * 1024;
+
 export function createDashboard(shell) {
   return {
     loading: false,
@@ -16,17 +23,24 @@ export function createDashboard(shell) {
     checking: false,
     updateBusy: '',
 
-    async load() {
-      this.loading = true;
+    /**
+     * 加载概览页需要的数据。
+     * @param {{ silent?: boolean }} options
+     *   silent=true 用于后台补刷（只更新缓存体积，不置加载态、不再触发全局刷新），
+     *   必须保证这条路径不会反过来调用 refreshAll，否则会和调用方形成死锁。
+     */
+    async load(options = {}) {
+      const silent = options.silent === true;
+      if (!silent) this.loading = true;
       this.error = '';
       try {
         // 概览数据已经在 shell 里，这里只补缓存体积这一项（磁盘扫描，单独取）
         this.cache = await api.get('/cache');
-        if (!shell.env || !shell.counts) await shell.refreshAll({ silentOnboarding: true });
+        if (!silent && (!shell.env || !shell.counts)) await shell.refreshAll({ silentOnboarding: true });
       } catch (error) {
         this.error = errorMessage(error);
       } finally {
-        this.loading = false;
+        if (!silent) this.loading = false;
       }
     },
 
@@ -147,6 +161,29 @@ export function createDashboard(shell) {
       if (data) shell.trackJob(data.job);
     },
 
+    async uninstallScoop() {
+      const env = shell.env;
+      if (!env || !env.installed) {
+        shell.toast('Scoop 尚未安装，无需卸载。', 'info');
+        return;
+      }
+      const confirmed = await shell.askConfirm({
+        title: `卸载 Scoop`,
+        message: `将调用 scoop uninstall scoop，删除 Scoop 自身与它管理的所有应用目录。`,
+        detail: `当前根目录：${env.root}。卸载后本程序会自动重新检测环境。注意：powershell.exe / git 等未被 Scoop 安装的程序不会被删除。`,
+        confirmText: '确认卸载',
+        danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        const data = await shell.runAction(() => api.post('/scoop/uninstall'));
+        if (data && data.job) shell.trackJob(data.job);
+        else shell.toast(data?.reason || '卸载请求未返回任务。', 'warn');
+      } catch (error) {
+        shell.toast(errorMessage(error), 'danger');
+      }
+    },
+
     async updateBucket() {
       const data = await shell.runAction(() => api.post('/buckets/update', {}));
       if (data) shell.trackJob(data.job);
@@ -171,6 +208,84 @@ export function createDashboard(shell) {
       }
     },
 
+    /** 触发隐藏的文件选择框（input 在模板里，视图对象拿不到 $refs，只能按 id 取）。 */
+    pickScoopfile() {
+      const input = document.getElementById('scoopfile-input');
+      if (!input) return;
+      // 先清空：否则连续选择同一个文件不会再触发 change
+      input.value = '';
+      input.click();
+    },
+
+    /**
+     * 读取并导入 Scoopfile。
+     *
+     * 边界处理：用户取消选择 / 空文件 / 超过体积上限 / 非法 JSON / 不是数组 / 空数组，
+     * 全部在提交前拦掉并给出具体原因；读取与提交阶段抛出的异常由外层 catch 兜住。
+     */
+    async onScoopfilePicked(event) {
+      const input = event?.target;
+      const file = input?.files && input.files[0];
+      if (!file) return; // 用户取消了选择
+
+      try {
+        if (file.size === 0) {
+          shell.toast('选择的文件是空的。', 'warn');
+          return;
+        }
+        if (file.size > SCOOPFILE_MAX_BYTES) {
+          shell.toast(`Scoopfile 过大（${formatBytes(file.size)}），上限 ${formatBytes(SCOOPFILE_MAX_BYTES)}。`, 'danger');
+          return;
+        }
+
+        const text = await file.text();
+        if (!text.trim()) {
+          shell.toast('选择的文件内容为空。', 'warn');
+          return;
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          shell.toast('该文件不是合法的 JSON，无法导入。', 'danger');
+          return;
+        }
+        // 兼容两种形态：scoop export 产出的是 { buckets, apps } 对象，
+        // 手写文件则常是纯应用数组。只认数组会拒掉本程序自己导出的文件。
+        const appCount = Array.isArray(parsed)
+          ? parsed.length
+          : Array.isArray(parsed?.apps)
+            ? parsed.apps.length
+            : -1;
+        if (appCount < 0) {
+          shell.toast('Scoopfile 格式无法识别：应为应用数组，或包含 apps 数组的对象（与「导出 Scoopfile」的输出一致）。', 'danger', 8000);
+          return;
+        }
+        if (appCount === 0) {
+          shell.toast('Scoopfile 里没有任何应用，无需导入。', 'info');
+          return;
+        }
+
+        const confirmed = await shell.askConfirm({
+          title: '导入 Scoopfile',
+          message: `将按文件里的 ${formatNumber(appCount)} 项安装应用（已安装的会按 Scoop 的规则跳过或更新）。`,
+          detail: `文件：${file.name}（${formatBytes(file.size)}）。导入过程会实时输出日志，可随时取消。`,
+          confirmText: '开始导入',
+          danger: false,
+        });
+        if (!confirmed) return;
+
+        const data = await shell.runAction(() => api.post('/scoop/import', { content: text }));
+        if (data?.job) shell.trackJob(data.job);
+      } catch (error) {
+        shell.toast(errorMessage(error), 'danger');
+      } finally {
+        // 无论成功失败都清空，保证可以再次选择同一个文件
+        if (input) input.value = '';
+      }
+    },
+
     async clearCache() {
       const confirmed = await shell.askConfirm({
         title: '清空下载缓存',
@@ -180,19 +295,23 @@ export function createDashboard(shell) {
       });
       if (!confirmed) return;
       const data = await shell.runAction(() => api.post('/cache/remove', {}));
-      if (data) shell.trackJob(data.job);
+      // 缓存被清空后，概览页的「下载缓存」指标必须回源，否则会一直显示旧体积
+      if (data) shell.trackJob(data.job, { onDone: () => void this.load({ silent: true }) });
     },
 
     async cleanupOldVersions() {
       const confirmed = await shell.askConfirm({
         title: '清理旧版本',
-        message: '将删除所有应用的旧版本目录，仅保留当前版本。该操作不可撤销。',
+        message: '将删除所有应用的旧版本目录，仅保留当前版本。',
+        detail: '同时会删除不再被任何已安装应用引用的下载缓存（scoop cleanup --cache）。',
         confirmText: '开始清理',
         danger: true,
       });
       if (!confirmed) return;
-      const data = await shell.runAction(() => api.post('/cache/cleanup', {}));
-      if (data) shell.trackJob(data.job);
+      // 这是唯一的清理入口，直接带上 cache=true：请求本身就把语义表达清楚了。
+      const data = await shell.runAction(() => api.post('/cache/cleanup', { apps: [], cache: true }));
+      // 旧版本目录与缓存都会变，任务结束后把概览数据拉回来
+      if (data) shell.trackJob(data.job, { onDone: () => void this.load({ silent: true }) });
     },
 
     async updateOne(name, global = false) {
@@ -208,20 +327,33 @@ export function createDashboard(shell) {
     },
 
     async updateAll() {
-      const names = this.updates.map((item) => item.name).filter(Boolean);
-      if (names.length === 0) {
+      // 必须带上每个应用的安装范围：/apps/update 只接受一个 global 布尔，
+      // 混选时会由 submitScopedBatches 拆成两次请求，否则全局应用不会被更新到。
+      const entries = this.updates
+        .map((item) => ({ name: item.name, global: Boolean(item.global) }))
+        .filter((item) => Boolean(item.name));
+      if (entries.length === 0) {
         shell.toast('当前没有可更新的应用。', 'info');
         return;
       }
+      const globalCount = entries.filter((item) => item.global).length;
+      const scopeNote =
+        globalCount > 0 && globalCount < entries.length
+          ? `其中 ${entries.length - globalCount} 个为用户范围、${globalCount} 个为全局范围，将分两批依次执行。`
+          : '';
       const confirmed = await shell.askConfirm({
         title: '更新全部可更新应用',
-        message: `将依次更新 ${names.length} 个应用，耗时可能较长，过程中可随时取消。`,
+        message: `将依次更新 ${entries.length} 个应用，耗时可能较长，过程中可随时取消。`,
+        detail: scopeNote,
         confirmText: '开始更新',
         danger: false,
       });
       if (!confirmed) return;
-      const data = await shell.runAction(() => api.post('/apps/update', { apps: names }));
-      if (data) shell.trackJob(data.job);
+      try {
+        await shell.submitScopedBatches('/apps/update', entries);
+      } catch (error) {
+        shell.toast(errorMessage(error), 'danger');
+      }
     },
 
     statusLabelOf() {

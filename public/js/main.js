@@ -12,6 +12,7 @@
  */
 
 import { api, errorMessage, errorDetail } from './api.js';
+import { externalUrl } from './format.js';
 import { createDashboard } from './views/dashboard.js';
 import { createInstalled } from './views/installed.js';
 import { createDiscover } from './views/discover.js';
@@ -30,6 +31,22 @@ export const NAV_ITEMS = [
 
 const VIEW_STORAGE_KEY = 'scoop-manager.view';
 const NAV_COLLAPSE_KEY = 'scoop-manager.nav-collapsed';
+
+/**
+ * 桌面模式探测：IPC 垫片里已经用同样的判断式，保持一致。
+ * 浏览器访问时这个值就是 false，标题栏三按钮 + 拖拽区域都由 x-show 挡掉，
+ * 让 web 端和桌面端共用同一套 DOM。
+ */
+const TAURI = window.__TAURI__;
+const IS_DESKTOP = Boolean(TAURI && TAURI.window && typeof TAURI.window.getCurrentWindow === 'function');
+
+/** 桌面端窗口句柄（懒获取，首次使用前才触发）。 */
+let win = null;
+function getWin() {
+  if (!IS_DESKTOP) return null;
+  if (!win) win = TAURI.window.getCurrentWindow();
+  return win;
+}
 
 /** 抽屉形态的临界宽度，与 style.css 的 max-width:768px 媒体查询保持一致。 */
 const NAV_DRAWER_MAX_WIDTH = 768;
@@ -73,6 +90,13 @@ function createShell() {
   // 「任务完成后要做的事」登记表：key 是任务 id。
   // 刻意放在闭包里而不是 shell 响应式对象上，避免被 Alpine 的代理包一层。
   const jobDoneHandlers = new Map();
+  // 进行中的全局刷新：所有重入调用复用同一个 Promise，
+  // 避免并发刷新被静默丢弃（旧实现遇到 refreshing=true 直接 return）。
+  let refreshInFlight = null;
+  // 正在跑的这轮刷新是否带了 force（强制重读磁盘）
+  let inFlightForce = false;
+  // 是否已排队「等当前刷新结束后补做一轮强制刷新」
+  let forceQueued = false;
 
   const shell = {
     // ------------------------------------------------------------ 导航与布局
@@ -93,15 +117,30 @@ function createShell() {
     booting: true,
     fatal: '',
 
+    // ------------------------------------------------------------ 桌面模式
+    /** true = Tauri 外壳（无边框窗口 + 自绘标题栏）；false = 浏览器 / 服务模式 */
+    isDesktop: IS_DESKTOP,
+    /** 桌面窗口是否处于最大化，用于切换按钮图标（最大化 / 还原） */
+    isMaximized: false,
+
     // ------------------------------------------------------------ 全局数据
     health: null,
     env: null,
     counts: null,
     updates: [],
     updatesNote: '',
+    /**
+     * 可更新列表的来源：
+     *   'status'   → scoop status 的联网权威结果
+     *   'manifest' → 本地 bucket 索引比对（bucket 未更新时会滞后）
+     */
+    updatesSource: 'manifest',
+    updatesCachedAt: null,
     proxy: null,
     configFile: null,
     refreshing: false,
+    /** 「重新同步」进行中（清缓存 + 重读磁盘 + 等联网复核） */
+    resyncing: false,
     lastRefreshAt: null,
     running: 0,
     queued: 0,
@@ -147,6 +186,30 @@ function createShell() {
       return this.sidebarCollapsed ? '展开侧栏' : '收起侧栏（只留图标）';
     },
 
+    /**
+     * 当前视图的加载错误。
+     *
+     * 各视图的 load() 失败时只会把错误写进自己的 error 字段，而模板里从来没有渲染过它，
+     * 于是「请求失败」和「确实没有数据」在界面上长得一模一样（都是空列表 / 骨架屏）。
+     * 这里统一聚合，模板只渲染一处即可。
+     */
+    get activeError() {
+      const modules = {
+        dashboard: this.dashboard,
+        installed: this.installed,
+        discover: this.discover,
+        buckets: this.buckets,
+        config: this.config,
+        jobs: this.jobs,
+      };
+      return modules[this.view]?.error || '';
+    },
+
+    /** 错误提示里的「重试」：重新加载当前视图的数据。 */
+    reloadView() {
+      this.loadView(this.view);
+    },
+
     // ------------------------------------------------------------ 生命周期
     async boot() {
       // 视图恢复的优先级：地址栏 hash > 上次记忆（localStorage）> 默认概览。
@@ -181,6 +244,21 @@ function createShell() {
       await this.refreshAll();
       this.booting = false;
 
+      // 桌面模式：初始化最大化状态并订阅变化（自绘标题栏需要这个状态切换图标）
+      if (IS_DESKTOP) {
+        const handle = getWin();
+        try {
+          this.isMaximized = Boolean(await handle.isMaximized());
+          // onResized 在窗口尺寸变化时都会触发，覆盖最大化 / 还原 / 手动 resize 三种路径。
+          // 返回的 unlisten 函数在应用 teardown 时调用，避免监听器泄漏。
+          this._winResizedUnlisten = await handle.onResized(() => {
+            void handle.isMaximized().then((v) => (this.isMaximized = Boolean(v))).catch(() => {});
+          });
+        } catch {
+          // 权限未放行或窗口已销毁：忽略，保持 false
+        }
+      }
+
       // 轻量轮询：只同步任务计数与连接状态，不重扫磁盘
       this._poll = setInterval(() => this.refreshRuntime(), 5000);
 
@@ -209,15 +287,53 @@ function createShell() {
 
     handleKeydown(event) {
       if (event.key === 'Escape') {
+        // 逐层收起：确认弹层 -> 配置/Bucket 弹层 -> 抽屉 -> 引导 -> 侧栏。
+        // 旧实现只处理确认框、侧栏与两个抽屉，配置与 Bucket 的弹层按 Esc 毫无反应。
         if (this.confirm.open) {
           this.settleConfirm(false);
           return;
         }
+        if (this.config.edit.open) {
+          this.config.closeEdit();
+          return;
+        }
+        if (this.config.add.open) {
+          this.config.closeAdd();
+          return;
+        }
+        if (this.buckets.form.open) {
+          this.buckets.closeForm();
+          return;
+        }
+        if (this.installed.detail.open) {
+          this.installed.closeDetail();
+          return;
+        }
+        if (this.discover.panel.open) {
+          this.discover.closeInstallPanel();
+          return;
+        }
+        if (this.onboarding.open) {
+          this.dismissOnboarding();
+          return;
+        }
         this.sidebarOpen = false;
-        this.installed.closeDetail();
-        this.discover.closeInstallPanel();
         return;
       }
+
+      // 有弹层 / 抽屉打开时不再响应全局快捷键，
+      // 否则 Ctrl+K 与 / 会在弹层背后把视图切走。
+      if (
+        this.confirm.open ||
+        this.config.edit.open ||
+        this.config.add.open ||
+        this.buckets.form.open ||
+        this.discover.panel.open ||
+        this.onboarding.open
+      ) {
+        return;
+      }
+
       const isTyping = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName ?? '');
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -268,33 +384,147 @@ function createShell() {
     },
 
     // ------------------------------------------------------------ 全局刷新
-    async refreshAll(options = {}) {
-      if (this.refreshing) return;
-      this.refreshing = true;
-      this.fatal = '';
-      try {
-        const [health, overview] = await Promise.all([api.get('/health'), api.get('/overview')]);
-        this.health = health;
-        this.env = overview.scoop;
-        this.counts = overview.counts;
-        this.updates = overview.updates ?? [];
-        this.updatesNote = overview.updatesNote ?? '';
-        this.proxy = overview.proxy ?? null;
-        this.configFile = overview.configFile ?? null;
-        this.running = overview.jobs?.running ?? 0;
-        this.lastRefreshAt = Date.now();
+    /**
+     * 拉取全局概览数据（健康状态 / 环境 / 计数 / 可更新列表）。
+     *
+     * @param {object} options
+     * @param {boolean} options.force           强制后端重读磁盘并重建索引
+     * @param {boolean} options.silentOnboarding 不弹首次引导
+     *
+     * 重入策略：刷新进行中时复用同一个 Promise，而不是直接 return 丢弃调用。
+     * 任务连续结束、多个入口同时触发刷新时，每个调用方都能等到本轮刷新完成。
+     */
+    refreshAll(options = {}) {
+      const force = options.force === true;
 
-        if (!this.env.installed && !this.onboarding.dismissed && !options.silentOnboarding) {
-          this.openOnboarding();
+      if (refreshInFlight) {
+        // 已有一轮刷新在跑。若本轮要求强制重读磁盘、而正在跑的这轮不是，
+        // 就等它结束后补做一次强制刷新，而不是把 force 静默吞掉
+        //（否则「任务完成后重读磁盘」会被恰好并行的一轮普通刷新降级成读缓存）。
+        if (force && !inFlightForce && !forceQueued) {
+          forceQueued = true;
+          const pending = refreshInFlight;
+          return pending.then(() => {
+            forceQueued = false;
+            return this.refreshAll(options);
+          });
         }
-        if (this.env.installed) {
-          this.onboarding.open = false;
+        return refreshInFlight;
+      }
+
+      inFlightForce = force;
+
+      const run = (async () => {
+        this.refreshing = true;
+        this.fatal = '';
+        try {
+          const overviewPath = options.force ? '/overview?force=1' : '/overview';
+          const [health, overview] = await Promise.all([api.get('/health'), api.get(overviewPath)]);
+          this.health = health;
+          this.applyOverview(overview);
+
+          if (!this.env.installed && !this.onboarding.dismissed && !options.silentOnboarding) {
+            this.openOnboarding();
+          }
+          if (this.env.installed) {
+            this.onboarding.open = false;
+          }
+
+          // 概览页的「下载缓存」不在 overview 里，是单独一次磁盘扫描。
+          // 仅在需要时补一次（点「刷新」、清空缓存 / 清理旧版本之后），
+          // 避免每一轮后台刷新都去遍历缓存目录。
+          if (options.refreshCache && this.dashboard && this.dashboard.cache) {
+            void this.dashboard.load({ silent: true });
+          }
+
+          // 已安装页若已加载过，后台静默强制重扫一次。
+          // 这是「任务页重试成功后列表不更新」的关键补齐：任务完成只走到这里，
+          // 用户不必离开任务页，列表数据就已与磁盘同步；命令行外部变更同理。
+          if (this.installed && this.installed.items.length > 0) {
+            void this.installed.load(options.force === true, true).catch(() => {});
+          }
+          // 搜索结果里的「已安装」标记也要跟着磁盘走：否则刚装完/刚卸载的应用
+          // 在搜索页仍显示旧状态。这个请求命中同一份已安装快照，代价很低。
+          if (this.discover && this.discover.installedNames.length > 0) {
+            void this.discover.loadInstalledNames();
+          }
+        } catch (error) {
+          this.fatal = errorMessage(error);
+          this.toast(errorMessage(error), 'danger', 8000);
+        } finally {
+          this.refreshing = false;
+        }
+      })();
+
+      refreshInFlight = run.finally(() => {
+        refreshInFlight = null;
+        inFlightForce = false;
+      });
+      return refreshInFlight;
+    },
+
+    /** 把 /overview 的返回值落到全局状态（refreshAll 与轮询共用同一份映射）。 */
+    applyOverview(overview) {
+      this.env = overview.scoop ?? { installed: false };
+      this.counts = overview.counts ?? { installed: 0, global: 0, held: 0, buckets: 0, updatable: 0, cacheBytes: 0, indexEntries: 0 };
+      this.updates = overview.updates ?? [];
+      this.updatesNote = overview.updatesNote ?? '';
+      this.updatesSource = overview.updatesSource ?? 'manifest';
+      this.updatesCachedAt = overview.updatesCachedAt ?? null;
+      this.proxy = overview.proxy ?? null;
+      this.configFile = overview.configFile ?? null;
+      this.running = overview.jobs?.running ?? 0;
+      this.lastRefreshAt = Date.now();
+    },
+
+    /**
+     * 只重新拉一次 overview，不做整轮磁盘重扫。
+     * 用于等待后台 `scoop status` 回填时的轮询（每次 5 秒、最多 6 次）。
+     */
+    async refreshOverview() {
+      try {
+        this.applyOverview(await api.get('/overview'));
+      } catch {
+        // 轮询失败静默：可能是后台正忙，等下一轮
+      }
+    },
+
+    /**
+     * 一键重新同步 —— 专治「在终端里直接操作过 Scoop，界面数据与磁盘不一致」。
+     *
+     * 做三件事：
+     *   1. 作废后端所有进程内缓存（含 scoop hold 这类目录快照捕捉不到的改动、5 分钟 TTL 的 scoop status）；
+     *   2. 重新读磁盘刷新全局数据与当前视图；
+     *   3. 有限轮询等待后台 scoop status 回填联网权威的可更新列表。
+     *
+     * 不做无限等待：串行队列里可能有长任务，超时就交给用户手动「检查更新状态」。
+     * 本机实测 scoop status 约 8 秒（bucket 多 / 网络慢会更久），故给 30 秒预算。
+     */
+    async resync() {
+      if (this.resyncing) return;
+      this.resyncing = true;
+      try {
+        await api.post('/system/resync');
+        await this.refreshAll({ force: true, refreshCache: true });
+        this.reloadView();
+        this.toast('已清空缓存并重新读取磁盘。', 'success');
+
+        if (this.updatesSource !== 'status') {
+          for (let attempt = 0; attempt < 6; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+            await this.refreshOverview();
+            if (this.updatesSource === 'status') break;
+          }
+        }
+        if (this.updatesSource === 'status') {
+          this.toast('可更新列表已更新为联网权威结果。', 'success');
+        } else {
+          this.toast('联网复核未在 30 秒内完成，可更新列表暂按本地 bucket 索引计算；稍后可点「检查更新状态」重试。', 'warn', 8000);
         }
       } catch (error) {
-        this.fatal = errorMessage(error);
-        this.toast(errorMessage(error), 'danger', 8000);
+        this.toast(errorMessage(error), 'danger');
       } finally {
-        this.refreshing = false;
+        this.resyncing = false;
       }
     },
 
@@ -316,6 +546,26 @@ function createShell() {
         this.toast('环境信息已刷新', 'success');
         await this.refreshAll({ silentOnboarding: true });
       }
+    },
+
+    /**
+     * 清除「指定路径」写入的应用配置，回到自动检测。
+     * 只在 env.rootSource === 'app-config' 时才会出现入口（见 dashboard 的 hero 区）。
+     */
+    async clearScoopPath() {
+      const confirmed = await this.askConfirm({
+        title: '恢复自动检测',
+        message: '将清除本程序记录的 Scoop 根目录，改回按环境变量与默认位置自动检测。',
+        detail: '只清除本程序的配置项，不会删除或移动任何文件。',
+        confirmText: '恢复自动检测',
+        danger: false,
+      });
+      if (!confirmed) return;
+      const data = await this.runAction(() => api.del('/scoop/path'), { silent: true });
+      if (!data) return;
+      this.env = data;
+      this.toast('已恢复自动检测', 'success');
+      await this.refreshAll({ silentOnboarding: true });
     },
 
     // ------------------------------------------------------------ 引导
@@ -412,6 +662,12 @@ function createShell() {
     // ------------------------------------------------------------ 确认弹层
     askConfirm({ title, message, detail = '', confirmText = '确认', danger = true }) {
       return new Promise((resolve) => {
+        // 上一个确认还没落定时先以「取消」结束它：
+        // 直接覆盖 this.confirm 会让上一个 await 永远悬空（例如连点两次危险操作）。
+        const previous = this.confirm;
+        if (previous.open && typeof previous.resolve === 'function') {
+          previous.resolve(false);
+        }
         this.confirm = { open: true, title, message, detail, confirmText, danger, resolve };
       });
     },
@@ -475,6 +731,46 @@ function createShell() {
       this.toast(options.message ?? `已提交任务：${job.title}`, 'info');
     },
 
+    /**
+     * 按安装范围拆分提交批量任务。
+     *
+     * scoop 的 `-g` 是「整次调用」的开关，接口也只接受一个 global 布尔，
+     * 因此混选「用户 / 全局」应用时必须拆成两次请求 —— 否则全局应用会被按用户范围处理
+     * （`scoop update <name>` 命中不到全局目录，表现为「跑完了但什么都没变」）。
+     *
+     * @param {string} path            '/apps/update' | '/apps/uninstall'
+     * @param {Array<{name: string, global: boolean}>} entries
+     * @param {object} body            两次请求共用的额外字段（例如 purge）
+     * @returns {Promise<Array>} 已提交的任务列表
+     *
+     * 两次请求共用同一条串行队列，按提交顺序执行；日志面板同一时刻只能跟一条流，
+     * 所以只 watch 第一个任务，其余任务在任务列表里跟进。
+     */
+    async submitScopedBatches(path, entries, body = {}) {
+      const groups = [];
+      const userApps = entries.filter((item) => !item.global).map((item) => item.name);
+      const globalApps = entries.filter((item) => item.global).map((item) => item.name);
+      if (userApps.length > 0) groups.push({ apps: userApps, global: false });
+      if (globalApps.length > 0) groups.push({ apps: globalApps, global: true });
+      if (groups.length === 0) return [];
+
+      const jobs = [];
+      for (const group of groups) {
+        // 串行 await：第二批在后端排队，避免两个 scoop 同时改动同一份 bucket / 缓存
+        const data = await api.post(path, { ...body, apps: group.apps, global: group.global });
+        jobs.push(data.job);
+        // 第一批发出去就接上日志流：万一后面的批次提交失败，
+        // 已经提交的那批仍然是被跟踪的，不会变成"没人看的孤儿任务"
+        if (jobs.length === 1) this.trackJob(data.job);
+      }
+
+      if (jobs.length > 1) {
+        const queued = groups.slice(1).reduce((sum, group) => sum + group.apps.length, 0);
+        this.toast(`已按安装范围拆成 ${jobs.length} 批：先执行 ${groups[0].apps.length} 个，其余 ${queued} 个排队依次执行。`, 'info', 6000);
+      }
+      return jobs;
+    },
+
     /** 由任务视图在收到 done 事件时回调，执行 trackJob 注册的后置动作。 */
     notifyJobDone(id, status) {
       const handler = jobDoneHandlers.get(id);
@@ -519,6 +815,67 @@ function createShell() {
 
     errorDetailOf(error) {
       return errorDetail(error);
+    },
+
+    /** 外链过滤：模板里绑 href 的第三方地址（homepage / bucket source）都要过这一层 */
+    externalUrl(value) {
+      return externalUrl(value);
+    },
+
+    /**
+     * 打开外部链接。
+     *
+     * 桌面端的 WebView 不处理 `target="_blank"`（点了没有任何反应），必须走 Rust 侧的
+     * `open_external` 命令；服务/浏览器模式退回新标签页。两条路径都只放行 http(s)，
+     * 因为 homepage / bucket source 都来自第三方内容。
+     *
+     * @returns {boolean} 是否真的打开了（false 表示没有可用链接）
+     */
+    openExternal(value) {
+      const target = externalUrl(value);
+      if (!target) return false;
+
+      const invoke = TAURI?.core?.invoke;
+      if (IS_DESKTOP && typeof invoke === 'function') {
+        Promise.resolve(invoke('open_external', { url: target })).catch((error) => {
+          // 命令被拒绝（例如能力校验不通过）时不静默失败，否则用户只会觉得"点了没反应"
+          this.toast(`无法打开链接：${error?.message ?? error}`, 'warn');
+        });
+        return true;
+      }
+
+      window.open(target, '_blank', 'noopener,noreferrer');
+      return true;
+    },
+
+    // ------------------------------------------------------------ 桌面窗口控制
+    // 这些方法只有 isDesktop=true 才会在模板里出现；浏览器调用时直接 no-op。
+    windowMinimize() {
+      const handle = getWin();
+      if (!handle) return;
+      void handle.minimize().catch(() => {});
+    },
+
+    windowToggleMaximize() {
+      const handle = getWin();
+      if (!handle) return;
+      void handle.toggleMaximize().catch(() => {});
+    },
+
+    /**
+     * 关闭按钮：与 Rust 侧 on_window_event CloseRequested 协作。
+     *
+     * Rust 里对 CloseRequested 做了 api.prevent_close() + hide() ——
+     * 它把「点 X」解释为「最小化到托盘」，从而让后台 scoop 任务继续跑。
+     *
+     * 前端调 window.close() 会再次触发 CloseRequested 走同一路径，
+     * 所以最终效果仍是"隐藏到托盘"，这正是我们想要的：
+     * 自绘标题栏的关闭按钮与系统原生关闭按钮行为完全一致，都不杀进程。
+     */
+    windowClose() {
+      const handle = getWin();
+      if (!handle) return;
+      void handle.close().catch(() => {});
     },
   };
 

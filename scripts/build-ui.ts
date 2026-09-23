@@ -67,7 +67,12 @@ function main(): void {
     wanted.set(relative, desiredContent(relative));
   }
 
-  const occurrences = wanted.get(PLACEHOLDER_FILE)?.length ?? 0;
+  // 统计的是「源文件里占位符出现次数」。不能用 wanted.get(...).length ——
+  // 那是替换之后的 Buffer 字节数，只要文件非空就永远大于 0，告警永远不会触发。
+  const sourceIndex = join(SOURCE, PLACEHOLDER_FILE);
+  const occurrences = existsSync(sourceIndex)
+    ? readFileSync(sourceIndex, 'utf8').split(PLACEHOLDER).length - 1
+    : 0;
   if (occurrences === 0) {
     console.warn('警告：public/index.html 中未找到 __BASE_PATH__ 占位符，请确认该文件未被改动。');
   }

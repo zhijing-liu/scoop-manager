@@ -1,4 +1,4 @@
-/**
+﻿/**
  * bucket 名列表的轻量缓存。
  *
  * 单独抽出这一层是为了避免 route -> service 之间的循环依赖：
@@ -7,7 +7,7 @@
 
 import { join } from 'node:path';
 import { listDirs } from '../utils/fsx.js';
-import { getCachedScoopEnvironment } from './scoop-locator.js';
+import { getCachedScoopEnvironment } from './locator.js';
 
 export function bucketNamesCached(): string[] {
   const env = getCachedScoopEnvironment();

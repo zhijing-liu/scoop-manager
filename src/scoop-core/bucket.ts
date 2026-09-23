@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Bucket 管理。
  *
  * 列举走文件系统（快、稳），known 列表走 `scoop bucket known`（这是 Scoop 内置的
@@ -6,14 +6,14 @@
  */
 
 import { join } from 'node:path';
-import { createLogger } from '../utils/logger.js';
+import { createLogger } from './logger.js';
 import { exists, listDirs, readText, statSafe } from '../utils/fsx.js';
-import { detectScoop, requireScoopEnvironment } from './scoop-locator.js';
+import { detectScoop, requireScoopEnvironment } from './locator.js';
 import { psQuote, runPowerShellOnce } from './powershell.js';
-import { readConfig } from './config-service.js';
-import { manifestIndex } from './manifest-index.js';
+import { readConfig } from './config.js';
+import { manifestIndex } from './manifest.js';
 import { assertName } from '../utils/validate.js';
-import { AppError } from '../server/errors.js';
+import { AppError } from './errors.js';
 
 const logger = createLogger('bucket');
 
@@ -84,10 +84,21 @@ export async function listBuckets(): Promise<BucketInfo[]> {
 
 let knownCache: { at: number; items: string[] } | null = null;
 
+/**
+ * 作废 known bucket 列表缓存。
+ * 该列表来自 `scoop bucket known`（升级 Scoop 后可能变化），
+ * 「重新同步」时会一并清掉，避免推荐列表长时间停在旧内容上。
+ */
+export function invalidateKnownBuckets(): void {
+  knownCache = null;
+}
+
 /** 已知 bucket 列表（Scoop 内置的推荐列表）。 */
 export async function knownBuckets(): Promise<{ items: Array<{ name: string; added: boolean; official: boolean }>; source: 'scoop' | 'fallback' }> {
   const env = await detectScoop();
-  const installed = new Set(listBuckets0(env.root));
+  // 归一成小写再比对：磁盘上的目录名不保证是小写（手工 clone 出来的 bucket 尤其常见），
+  // 而 scoop 的 known 列表一定是小写，否则会把已添加的 bucket 显示成「未添加」。
+  const installed = new Set(listBuckets0(env.root).map((name) => name.toLowerCase()));
 
   let names: string[] = [];
   let source: 'scoop' | 'fallback' = 'fallback';

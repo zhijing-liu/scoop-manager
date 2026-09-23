@@ -99,7 +99,7 @@ proxy_set_header X-Forwarded-Prefix /scoop;
 
 | 区域 | 可做的事 |
 | --- | --- |
-| 顶部环境卡 | 「重新检测」刷新环境信息；「指定路径」接入已有安装；未安装时显示「一键安装 Scoop」 |
+| 顶部环境卡 | 「重新检测」刷新环境信息；「指定路径」接入已有安装（已指定过时会出现「恢复自动检测」）；「重新同步」作废全部缓存并重读磁盘（在终端里直接操作过 Scoop 后用，详见 [TROUBLESHOOTING 第 20 节](./TROUBLESHOOTING.md)）；未安装时显示「一键安装 Scoop」 |
 | 指标卡 | 已安装应用数、可更新数、Bucket 数、可搜索应用数、下载缓存体积、已锁定数 |
 | 环境体检 | 逐项展示平台、安装、根目录、版本、全局目录、PowerShell、执行策略、配置文件；带复制按钮的项可直接复制路径 |
 | 快捷操作 | 环境体检（`scoop checkup`）、更新 Bucket、更新 Scoop 自身、导出 Scoopfile、清理旧版本、清空缓存 |
@@ -110,6 +110,8 @@ proxy_set_header X-Forwarded-Prefix /scoop;
 ### 2. 已安装应用
 
 - **筛选与排序**：名称搜索、用户 / 全局 / 全部切换、按名称 / 更新时间 / 来源 Bucket 排序；工具栏右侧的「只看可更新」可一键只列出有新版本的应用（按钮上的数字即可更新数量，与用户/全局筛选可叠加使用）。
+- **工具栏**：「重新扫描」强制重读磁盘；「检查更新状态」执行 `scoop status` 联网获取权威的可更新列表；「原始清单」执行 `scoop list` 并把 Scoop 自己输出的清单原样打印到任务日志（用于对照界面数据，见 [TROUBLESHOOTING 第 21 节](./TROUBLESHOOTING.md)）。
+- **应用详情（点应用名打开）**：安装路径（可复制）、主页（「打开主页」用系统浏览器打开）、shim 命令、仓库中的版本、原始 manifest，以及锁定 / 更新 / 卸载。
 - **行内操作**（图标）：
   - ⬆ 更新：执行 `scoop update <name>`
   - 🔒 / 🔓 锁定 / 解锁：执行 `scoop hold` / `scoop unhold`，锁定后不会被更新
@@ -208,7 +210,8 @@ proxy_set_header X-Forwarded-Prefix /scoop;
 ### 备份与迁移
 
 - 概览页「导出 Scoopfile」下载 JSON 备份（包含已安装应用列表）。
-- 在新机器上可通过 `POST /api/scoop/import` 导入（见 [API.md](./API.md)）。
+- 在新机器上点概览页「导入 Scoopfile」选择该文件即可批量安装（也可直接调用 `POST /api/scoop/import`，见 [API.md](./API.md)）。
+  导入前会校验文件格式并二次确认，文件上限 1 MB。
 
 ### 释放磁盘空间
 

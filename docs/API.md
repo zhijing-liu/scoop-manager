@@ -133,6 +133,8 @@
       { "name": "nodejs", "installed": "20.11.0", "available": "22.2.0", "bucket": "main", "global": false, "hold": false }
     ],
     "updatesNote": "结果基于本地 bucket 数据，若长时间未更新 bucket，可能滞后于实际最新版本。",
+    "updatesSource": "manifest",
+    "updatesCachedAt": null,
     "proxy": { "value": "127.0.0.1:7890", "mode": "custom", "display": "127.0.0.1:7890" },
     "configFile": "C:\\Users\\me\\scoop\\apps\\scoop\\current\\apps\\scoop\\config.json",
     "jobs": { "running": 0, "recent": [] }
@@ -141,6 +143,15 @@
 ```
 
 `updates` 最多返回 50 条。
+
+`updatesSource` 表示可更新列表的来源，前端据此显示徽标：
+
+| 值 | 含义 |
+| --- | --- |
+| `"status"` | 来自 `scoop status` 的**联网权威结果**（`updatesCachedAt` 为那次命令的完成时间，有效期 5 分钟） |
+| `"manifest"` | 本地 bucket 索引比对（毫秒级，但 bucket 未 `git pull` 时会滞后） |
+
+想让 `"manifest"` 变回 `"status"`：调 `POST /api/system/resync`（后台自动重跑），或在前端点「检查更新状态」。
 
 ### ScoopEnvironment 结构
 
@@ -179,6 +190,33 @@
 ```json
 { "ok": true, "data": { "...": "ScoopEnvironment" } }
 ```
+
+### POST `/api/system/resync`
+
+**一键重新同步**：作废全部进程内缓存，专治「用户在外部命令行直接操作过 Scoop，界面数据与磁盘不一致」。
+
+不清缓存就无法自愈的两类情况：
+- `scoop hold` / `unhold` 只修改 `apps\<name>\current\install.json` 的**内容**，父目录 mtime 不变，目录级快照捕捉不到；
+- `scoop status` 的可更新列表结果有 5 分钟 TTL。
+
+请求体：无。
+
+```json
+{
+  "ok": true,
+  "data": {
+    "cleared": ["scoop-env", "powershell", "installed-apps", "manifest-index", "scoop-status", "known-buckets"],
+    "refreshedAt": 1730000000000
+  }
+}
+```
+
+- 接口只清缓存、**秒回**，不会阻塞在扫盘或联网上。
+- 清完缓存会立即在后台重跑一次 `scoop status`（走串行队列，且做了重入保护），
+  所以紧接着调 `GET /api/overview` 时 `updatesSource` 可能还是 `"manifest"`，
+  几秒到几十秒后会变回 `"status"`（本机实测 `scoop status` 约 8 秒，bucket 多 / 网络慢会更久）。
+- 纯读操作，不会修改任何 Scoop 数据。
+- 前端「概览 → 重新同步」按钮用的就是它，并会在 30 秒内轮询等待权威结果回填。
 
 ---
 
@@ -248,7 +286,7 @@ PUT /api/scoop/path
 {
   "ok": true,
   "data": {
-    "json": "[{\"Name\":\"7zip\",\"Source\":\"main\"}]",
+    "json": "{\n    \"buckets\": [ ... ],\n    \"apps\": [ { \"Name\": \"7zip\", \"Source\": \"main\", \"Version\": \"26.03\" } ]\n}",
     "file": "C:\\Users\\me\\.scoop-manager\\Scoopfile.json",
     "appCount": 1
   }
@@ -257,14 +295,24 @@ PUT /api/scoop/path
 
 同时会在数据目录落盘一份 `Scoopfile.json`。
 
+> `scoop export` 输出的是 **`{ buckets, apps }` 对象**（不是数组），`appCount` 取自 `apps` 数组的长度。
+> `json` 是该输出的原文，未做任何改写。
+
 ### POST `/api/scoop/import`
 
-导入 Scoopfile（JSON 数组）。
+导入 Scoopfile。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `content` | string | 二选一 | Scoopfile 的 JSON 文本 |
-| `scoopfile` | array | 二选一 | 直接传数组（内部会序列化） |
+| `scoopfile` | array \| object | 二选一 | 直接传结构（内部会序列化） |
+
+`content` / `scoopfile` 支持两种形态，与 `scoop import` 保持一致：
+
+- **对象**：`{ "buckets": [...], "apps": [...] }` —— `scoop export` 的输出格式（推荐，同时携带 bucket 与 config）；
+- **数组**：`[ { "Name": "7zip", "Source": "main" } ]` —— 早期 / 手写格式，仅包含应用。
+
+两种都不是时返回 400 `INVALID_PARAM`。**导出后原样导入是支持的**（去掉了此前只接受数组的限制）。
 
 返回 202 与任务，任务类型为 `scoop.import`。
 
@@ -303,11 +351,13 @@ PUT /api/scoop/path
 
 ### POST `/api/cache/cleanup`
 
-清理旧版本。
+清理旧版本（`scoop cleanup`，本端点同时也是该命令的唯一入口）。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `apps` | string[] | 否 | 指定应用；留空或 `["*"]` 表示全部（`scoop cleanup *`） |
+| `global` | boolean | 否 | 清理全局目录的应用（`-g`） |
+| `cache` | boolean | 否 | 同时删除过期的下载缓存（`-k`） |
 
 返回 202 与任务（`app.cleanup`）。
 
@@ -362,6 +412,19 @@ PUT /api/scoop/path
 ### POST `/api/apps/status`
 
 执行 `scoop status`（实时联网检查更新，较慢）。返回 202 与任务。
+
+### POST `/api/apps/list`
+
+执行 `scoop list`，把 Scoop 自己输出的已安装清单**原样写进任务日志**（返回 202 与任务 `app.list`）。
+
+界面上的清单是本程序扫 `apps` 目录得来的（更快、字段更多），这个入口用于在两者对不上时
+对照上游输出，定位问题在哪一边。
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `query` | string | 否 | 可选筛选词（`scoop list <query>`）；上限 100 字符，不接受控制字符 |
+
+只读命令，不进串行队列。输出可在任务详情里查看与复制。
 
 ### GET `/api/apps/:name`
 
@@ -719,6 +782,7 @@ PUT /api/scoop/path
         "kind": "app.install",
         "title": "安装：7zip",
         "target": "7zip",
+        "request": { "method": "POST", "path": "/api/apps/install", "body": { "apps": ["7zip"] } },
         "status": "running",
         "createdAt": 1730000000000,
         "startedAt": 1730000000100,
@@ -734,6 +798,15 @@ PUT /api/scoop/path
   }
 }
 ```
+
+**`request`（原始请求快照）**
+
+任务的 `request` 字段保存了创建它时的原始请求，供内置界面的「一键重试」原样重放：
+
+- 由各路由在创建任务时填写；**只有可重放的任务才带它**，其余为 `null`（界面上不出现重试按钮）。
+- 之所以不用 `target` 反推：`target` 只是给人看的展示串（逗号拼接的应用名），反推会丢掉 `global` / `arch` / `force` 等参数 —— 全局应用甚至会被按用户范围重放。
+- 落盘前会做收敛：路径必须是 `/api/...` 且不含 `..`，请求体序列化后不超过 16 KB，否则整个字段置为 `null`（避免把几 MB 的 body 反复写进 `jobs.json`）。
+- 该字段会随任务历史一起持久化并在重启后恢复，因此**重放前必须把它当作不可信输入**（内置界面会再次校验路径前缀）。
 
 ### POST `/api/jobs/clear`
 
@@ -825,7 +898,7 @@ interface JobEvent {
 
 **任务类型（`kind`）**
 
-`scoop.install`、`scoop.update`、`scoop.checkup`、`scoop.export`、`scoop.import`、`app.install`、`app.uninstall`、`app.update`、`app.hold`、`app.unhold`、`app.cleanup`、`app.reset`、`bucket.add`、`bucket.remove`、`bucket.update`、`config.set`、`config.remove`、`cache.remove`、`script.run`
+`scoop.install`、`scoop.update`、`scoop.checkup`、`scoop.export`、`scoop.import`、`app.install`、`app.uninstall`、`app.update`、`app.hold`、`app.unhold`、`app.cleanup`、`app.reset`、`app.list`、`app.status`、`bucket.add`、`bucket.remove`、`bucket.update`、`config.set`、`config.remove`、`cache.remove`、`script.run`
 
 任务已结束时，SSE 只重放历史事件随即发送 `eof`，不会保持长连接。
 
@@ -844,4 +917,19 @@ interface JobEvent {
 - 响应头包含 `Content-Security-Policy`（禁止一切外部资源）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`。
 - `vendor/` 下资源允许 7 天强缓存，其余为 `no-cache`。
 - 兜底：`GET /api/*` 未匹配时返回 JSON 格式的 404，而不是落回 `index.html`。
+
+---
+
+## 十一、仅 API 提供（内置 Web UI 未接入）
+
+以下端点是完整可用的，只是内置界面没有入口，供脚本 / 二次开发直接调用：
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /api/apps/download` | 仅下载不安装（`scoop download`） |
+| `GET /api/apps/updates` | 单独取可更新列表（界面统一走 `GET /api/overview`） |
+| `GET /api/scoop/env` | 单独取环境快照（界面统一走 `GET /api/overview`） |
+| `GET /api/config/proxy` | 单独取生效代理（界面统一走 `GET /api/overview` 与 `GET /api/config`） |
+
+`GET /api/scoop/options` 虽不直接产生界面元素，但安装面板的选项列表、默认值与「将执行的命令」预览都由它驱动（`scoop-core/options.ts` 是唯一数据源）。
 

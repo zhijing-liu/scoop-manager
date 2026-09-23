@@ -6,9 +6,9 @@ import { Hono } from 'hono';
 import { envelope } from '../server/errors.js';
 import { assertName, safeJsonBody } from '../utils/validate.js';
 import { startJob, translateResult } from '../jobs/execute.js';
-import { buildAddArgs, buildBucketSyncPlan, buildRemoveArgs, listBuckets, knownBuckets } from '../services/bucket-service.js';
-import { manifestIndex } from '../services/manifest-index.js';
-import { installedApps } from '../services/installed-apps.js';
+import { buildAddArgs, buildBucketSyncPlan, buildRemoveArgs, listBuckets, knownBuckets } from '../scoop-core/bucket.js';
+import { manifestIndex } from '../scoop-core/manifest.js';
+import { installedApps, refreshScoopStatusCache } from '../scoop-core/installed.js';
 
 export const bucketRoutes = new Hono();
 
@@ -71,6 +71,9 @@ bucketRoutes.post('/buckets/update', async (c) => {
     kind: 'bucket.update',
     title: name ? `更新 Bucket：${name}` : `更新全部 Bucket（${plan.buckets.length} 个）`,
     target: name ?? plan.buckets.join(', '),
+    // target 在"更新全部"时是逗号拼接的全部名字，无法反推，
+    // 因此重试统一走原始请求快照
+    request: { method: 'POST', path: '/api/buckets/update', body },
     execute: async (ctx) => {
       ctx.log(`同步方式：git pull（Scoop 未提供 bucket update 子命令）`);
       if (plan.skipped.length > 0) {
@@ -85,15 +88,17 @@ bucketRoutes.post('/buckets/update', async (c) => {
         await ctx.script(plan.script, {
           label: '同步 Bucket（git pull）',
           timeoutMs: 20 * 60 * 1000,
-          // git 在需要凭据时会交互式询问，非交互环境下会一直挂起直到超时
           env: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
         }),
         '更新 Bucket',
       );
     },
-    onSettled: () => {
+    onSettled: ({ status }) => {
       manifestIndex.invalidate();
       installedApps.invalidate();
+      // bucket 刚 git pull 完，拿权威结果最有意义的时刻就是此刻。
+      // fire-and-forget：后台串行队列会自己排队，不阻塞；失败静默。
+      if (status === 'succeeded') void refreshScoopStatusCache();
     },
   });
 

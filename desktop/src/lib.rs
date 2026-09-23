@@ -46,6 +46,7 @@ pub fn run() {
             server::restart_server,
             server::open_data_dir,
             server::open_log_file,
+            server::open_external,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -67,6 +68,7 @@ pub fn run() {
                 .min_inner_size(960.0, 640.0)
                 .center()
                 .resizable(true)
+                .decorations(false)
                 .initialization_script(IPC_SHIM)
                 .build()?;
 

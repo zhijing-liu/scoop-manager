@@ -14,7 +14,7 @@ import {
   type CliOptions,
 } from '../config.js';
 import { createLogger, setLogLevel, type LogLevel } from '../utils/logger.js';
-import { detectScoop, invalidateScoopEnvironment } from '../services/scoop-locator.js';
+import { detectScoop, invalidateScoopEnvironment } from '../scoop-core/locator.js';
 import { staticInfo } from '../server/static.js';
 import { normalizeBasePath, toAbsolute } from '../utils/paths.js';
 

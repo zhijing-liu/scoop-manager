@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Scoop 环境探测。
  *
  * 探测顺序（优先级从高到低）：
@@ -16,9 +16,9 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
 import { getAppConfig, isWindows, saveAppConfig } from '../config.js';
-import { AppError } from '../server/errors.js';
+import { AppError } from './errors.js';
 import { exists, isDirectory, listDirs, readJson, readText } from '../utils/fsx.js';
-import { createLogger } from '../utils/logger.js';
+import { createLogger } from './logger.js';
 import { findPowerShell, psQuote, runPowerShellOnce, type PowerShellKind } from './powershell.js';
 
 const logger = createLogger('scoop');

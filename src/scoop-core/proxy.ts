@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 代理设置的统一入口。
  *
  * 之所以需要两份存储，是因为存在一个「先有鸡还是先有蛋」的问题：
@@ -17,9 +17,9 @@
  */
 
 import { getAppConfig, saveAppConfig } from '../config.js';
-import { describeProxy, readConfig, type ProxyStatus } from './config-service.js';
-import { detectScoop } from './scoop-locator.js';
-import { createLogger } from '../utils/logger.js';
+import { describeProxy, readConfig, type ProxyStatus } from './config.js';
+import { detectScoop } from './locator.js';
+import { createLogger } from './logger.js';
 
 const logger = createLogger('proxy');
 

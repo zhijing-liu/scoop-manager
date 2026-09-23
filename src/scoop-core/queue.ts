@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 串行任务队列。
  *
  * 存在的原因：Scoop 自身不保证并发安全 —— 同时执行 install / update 会争抢
@@ -7,7 +7,7 @@
  * 不受此限制。
  */
 
-import { createLogger } from '../utils/logger.js';
+import { createLogger } from './logger.js';
 
 const logger = createLogger('queue');
 
@@ -15,8 +15,14 @@ export class SerialQueue {
   private tail: Promise<unknown> = Promise.resolve();
   private waiting = 0;
 
+  /** 队列里的任务总数（含正在执行的那一个） */
   get pending(): number {
     return this.waiting;
+  }
+
+  /** 真正在排队等待的数量（不含正在执行的那一个），用于对外上报 queued */
+  get queued(): number {
+    return Math.max(0, this.waiting - 1);
   }
 
   run<T>(label: string, task: () => Promise<T>): Promise<T> {

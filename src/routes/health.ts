@@ -10,11 +10,29 @@ import { APP_DESCRIPTION, APP_NAME, APP_VERSION, DATA_DIR, getAppConfig } from '
 import { envelope } from '../server/errors.js';
 import { staticInfo } from '../server/static.js';
 import { jobManager } from '../jobs/manager.js';
-import { mutationQueue } from '../jobs/queue.js';
-import { detectScoop } from '../services/scoop-locator.js';
+import { mutationQueue } from '../scoop-core/queue.js';
+import { detectScoop } from '../scoop-core/locator.js';
+import { refreshScoopStatusCache } from '../scoop-core/installed.js';
+import { invalidateAllCaches } from '../scoop-core/resync.js';
 import { bunRuntime, runtime, runtimeLabel } from '../runtime.js';
 
 export const healthRoutes = new Hono();
+
+/**
+ * 一键重新同步：作废所有进程内缓存。
+ *
+ * 专治「用户在外部命令行直接操作过 Scoop，界面数据与磁盘不一致」：
+ * `scoop hold` 这类只改文件内容、不改父目录 mtime 的操作，目录快照捕捉不到，
+ * 必须显式作废。接口只清缓存、秒回，随后在后台重跑一次 `scoop status`，
+ * 让可更新列表尽快回到联网权威结果（前端会做有限轮询等待回填）。
+ *
+ * 不会修改任何 Scoop 数据，纯读操作。
+ */
+healthRoutes.post('/system/resync', (c) => {
+  const cleared = invalidateAllCaches();
+  void refreshScoopStatusCache();
+  return c.json(envelope({ cleared, refreshedAt: Date.now() }));
+});
 
 healthRoutes.get('/health', async (c) => {
   const env = await detectScoop();
@@ -41,7 +59,7 @@ healthRoutes.get('/health', async (c) => {
       /** 反向代理子路径；空串表示部署在根路径 */
       basePath: getAppConfig().basePath,
       static: staticInfo(),
-      jobs: { running: jobManager.runningCount(), queued: mutationQueue.pending },
+      jobs: { running: jobManager.runningCount(), queued: mutationQueue.queued },
       scoop: {
         installed: env.installed,
         root: env.root,

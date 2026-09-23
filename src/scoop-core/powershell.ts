@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PowerShell 适配层。
  *
  * Scoop 本身是一组 PowerShell 脚本，因此"调用 scoop"本质上就是"调用 PowerShell"。
@@ -14,8 +14,8 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { AppError } from '../server/errors.js';
-import { createLogger } from '../utils/logger.js';
+import { AppError } from './errors.js';
+import { createLogger } from './logger.js';
 
 const logger = createLogger('powershell');
 
@@ -111,8 +111,13 @@ const PRELUDE = [
 export function buildScriptCommand(scriptPath: string, args: string[]): string {
   const quotedArgs = args.map((arg) => psQuote(arg)).join(' ');
   const invocation = quotedArgs.length > 0 ? `& ${psQuote(scriptPath)} ${quotedArgs}` : `& ${psQuote(scriptPath)}`;
-  // exit 保证把 scoop 的退出码透传给父进程；$LASTEXITCODE 为 $null 时等价于 0
-  return `${PRELUDE}; ${invocation}; exit $LASTEXITCODE`;
+  // `| Out-Default` 必须出现在 `exit` 之前，顺序不能换：
+  //   -Command 模式下 PowerShell 会把「管道输出对象」缓存到命令结束才渲染，
+  //   而 `exit` 会立刻终止运行空间，把这些尚未渲染的对象整批丢掉。
+  // `scoop status` 的表格正是这样消失的（只剩 Write-Host 直接写出的 WARN 行），
+  // 于是「检查更新状态」永远解析到 0 项、界面显示"全部最新"——典型的假阴性。
+  // Out-Default 在管道内立即渲染；$LASTEXITCODE 不受影响（exit 仍把 scoop 的退出码透传）。
+  return `${PRELUDE}; ${invocation} | Out-Default; exit $LASTEXITCODE`;
 }
 
 /**

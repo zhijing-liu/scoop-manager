@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Scoop 配置管理。
  *
  * 读取：直接解析 config.json。不同 Scoop 版本的配置文件位置不同
@@ -13,8 +13,8 @@ import { accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { exists, readJson } from '../utils/fsx.js';
 import { isProxyValue, assertProxyValue } from '../utils/validate.js';
-import { AppError } from '../server/errors.js';
-import { detectScoop } from './scoop-locator.js';
+import { AppError } from './errors.js';
+import { detectScoop } from './locator.js';
 import { parseProxyTarget, testTcp, type TcpTestResult } from '../utils/net.js';
 
 export type ProxyMode = 'custom' | 'system' | 'none';
