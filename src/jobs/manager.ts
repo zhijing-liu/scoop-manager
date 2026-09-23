@@ -15,7 +15,8 @@ import { JOBS_FILE, ensureDataDir } from '../config.js';
 import { readJson, writeJson } from '../utils/fsx.js';
 import { createLogger } from '../utils/logger.js';
 import { AppError } from '../server/errors.js';
-import { isTerminalStatus, type JobDetail, type JobError, type JobEvent, type JobKind, type JobRequest, type JobStatus, type JobSummary, type LogStream } from './types.js';
+import { isTerminalStatus, type JobDetail, type JobError, type JobEvent, type JobHint, type JobKind, type JobRequest, type JobStatus, type JobSummary, type LogStream } from './types.js';
+import { MAX_HINTS_PER_JOB, createHintDetector } from './hints.js';
 
 const logger = createLogger('jobs');
 
@@ -38,6 +39,8 @@ interface InternalJob {
   listeners: Set<(event: JobEvent) => void>;
   cancelHandler: (() => void) | null;
   cancelRequested: boolean;
+  /** 逐行扫描日志产出建议（规则与去重见 hints.ts） */
+  detectHint: (line: string) => JobHint | null;
 }
 
 export interface CreateJobInput {
@@ -83,6 +86,23 @@ function sanitizeRequest(request?: JobRequest | null): JobRequest | null {
   return { method, path: request.path, body };
 }
 
+/**
+ * 从 jobs.json 恢复建议时的形状校验。
+ *
+ * 该文件在用户目录里（可被手工编辑），恢复出来的内容会被前端直接渲染成
+ * 带按钮的提示块，因此按不可信输入处理：字段形态不对的整条丢弃。
+ */
+function sanitizeHints(raw: unknown): JobHint[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((hint): hint is JobHint => {
+      if (!hint || typeof hint !== 'object') return false;
+      const candidate = hint as Partial<JobHint>;
+      return typeof candidate.id === 'string' && typeof candidate.title === 'string' && typeof candidate.message === 'string';
+    })
+    .slice(0, MAX_HINTS_PER_JOB);
+}
+
 export interface FinishJobInput {
   status: Extract<JobStatus, 'succeeded' | 'failed' | 'canceled' | 'timeout'>;
   exitCode?: number | null;
@@ -126,6 +146,7 @@ class JobManager {
       canCancel: input.canCancel !== false,
       error: null,
       request: sanitizeRequest(input.request),
+      hints: [],
       seq: 0,
     };
     const internal: InternalJob = {
@@ -136,6 +157,7 @@ class JobManager {
       listeners: new Set(),
       cancelHandler: null,
       cancelRequested: false,
+      detectHint: createHintDetector(),
     };
     this.jobs.set(summary.id, internal);
     this.emit(internal, { type: 'status', status: 'queued' });
@@ -160,6 +182,13 @@ class JobManager {
     for (const line of lines) {
       if (line.length === 0) continue;
       this.emit(job, { type: 'log', stream, text: line });
+      // 逐行扫建议：日志是任务里唯一的"事实来源"，这里顺带产出可操作的提示。
+      // 新建议立刻以 hint 事件推给前端 —— 批量更新动辄几分钟，等到任务结束才提示就太晚了。
+      // （去重与条数封顶都在扫描器内部，这里只管落库与推送。）
+      const hint = job.detectHint(line);
+      if (!hint) continue;
+      job.summary.hints.push(hint);
+      this.emit(job, { type: 'hint', hint });
     }
   }
 
@@ -413,8 +442,9 @@ class JobManager {
         summary.error = { code: 'INTERRUPTED', message: '服务重启导致任务中断。' };
         summary.canCancel = false;
       }
+      const hints = sanitizeHints(summary.hints);
       const internal: InternalJob = {
-        summary: { ...summary, seq: 0, canCancel: false },
+        summary: { ...summary, hints, seq: 0, canCancel: false },
         events: [],
         trimmedBelow: 0,
         // 崩溃前已被环形缓冲裁掉的日志数要延续，否则前端的"日志已截断"提示会丢失
@@ -422,6 +452,8 @@ class JobManager {
         listeners: new Set(),
         cancelHandler: null,
         cancelRequested: false,
+        // 带上已有建议：否则同一条规则会在恢复后再次触发（日志尾部也在 jobs.json 里）
+        detectHint: createHintDetector(hints),
       };
       internal.events = (entry.logs ?? []).map((logEntry) => ({
         seq: 0,

@@ -50,12 +50,52 @@ export interface JobEvent {
   /** 单调递增序号，用于 SSE 断线重连时按 Last-Event-ID 补偿 */
   seq: number;
   ts: number;
-  type: 'log' | 'status' | 'done';
+  type: 'log' | 'status' | 'done' | 'hint';
   stream?: LogStream;
   text?: string;
   status?: JobStatus;
   exitCode?: number | null;
   error?: JobError;
+  /** type === 'hint'：新识别出的一条建议 */
+  hint?: JobHint;
+}
+
+/**
+ * 建议上附带的「一键操作」。
+ *
+ * 刻意保持极小的动作集合：动作由后端根据日志内容推出，前端只负责把它接到
+ * 已有界面上，避免在这里长出一套新的操作语义（例如后端直接发一条
+ * 「添加 dorado」的命令去执行 —— 那等于让日志内容驱动写操作）。
+ */
+export interface JobHintAction {
+  /** bucket.add：打开 Bucket 添加表单并预填名称；view：切到某个视图 */
+  kind: 'bucket.add' | 'view';
+  /** kind === 'bucket.add'：要添加的 bucket 名 */
+  bucket?: string;
+  /** kind === 'view'：目标视图 id（buckets / config / dashboard ...） */
+  view?: string;
+  /** 按钮文案 */
+  label: string;
+}
+
+/**
+ * 一条日志诊断建议。
+ *
+ * 与 `error` 的区别：`error` 表示任务失败的原因，`hints` 表示「日志里出现了
+ * 需要人来处理的信号，可以这样处理」。两者可以同时存在 —— 例如 bilibili 更新
+ * 成功（无 error），但清单脚本引用了缺失的 bucket（有 hint）。
+ */
+export interface JobHint {
+  /**
+   * 去重键：同一规则 + 同一关键词在一个任务里只报一次
+   * （形如 `bucket-helper-missing:dorado`，因此不同 bucket 各报一条）。
+   */
+  id: string;
+  /** warn = 有步骤没做成；info = 只是排查方向 */
+  level: 'warn' | 'info';
+  title: string;
+  message: string;
+  action?: JobHintAction;
 }
 
 /**
@@ -87,6 +127,11 @@ export interface JobSummary {
   error: JobError | null;
   /** 原始请求快照；null 表示该任务不提供一键重试 */
   request: JobRequest | null;
+  /**
+   * 日志诊断出的建议（可能为空）。随任务历史持久化，刷新或重启后仍在；
+   * 新增时通过 `hint` 事件实时推给前端，所以不必等任务结束才看得到。
+   */
+  hints: JobHint[];
   /** 已产生的事件最大序号 */
   seq: number;
 }

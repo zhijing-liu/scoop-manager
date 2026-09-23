@@ -149,12 +149,13 @@ type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 't
 interface JobEvent {
   seq: number;                  // 单调递增，用于断线补偿
   ts: number;
-  type: 'log' | 'status' | 'done';
+  type: 'log' | 'status' | 'done' | 'hint';
   stream?: 'stdout' | 'stderr' | 'system';
   text?: string;
   status?: JobStatus;
   exitCode?: number | null;
   error?: { code: string; message: string; detail?: unknown };
+  hint?: JobHint;               // type === 'hint'：新识别出的一条建议
 }
 ```
 
@@ -182,6 +183,27 @@ interface JobEvent {
 4. 客户端断开时通过 `stream.onAbort` 取消订阅
 
 前端 `public/js/sse.js` 负责：记录最后收到的 `seq`，断线后带 `since` 重连，并采用**指数退避**（最长 8 秒）。因此刷新页面或短暂断网后，日志仍能完整补齐。
+
+### 日志建议（hints）
+
+`jobs/hints.ts` 是一张**规则表**：逐行匹配日志文本，命中就产出一条带一键操作的提示。它处理的是
+「Scoop 没报失败、但日志里有需要人处理的信号」这一类情况 —— 最常见的是第三方 bucket 的清单脚本
+引用了另一个 bucket 的辅助模块，于是 `Import-Module` / `Mount-ExternalRuntimeData` 一片红，
+而应用其实装成功了（见 [TROUBLESHOOTING 第 22 节](./TROUBLESHOOTING.md)）。
+
+**为什么放在后端**：日志在后端产出、任务摘要本来就要落盘。建议随摘要持久化（刷新页面、重启服务后
+仍在），也避免前端为了同一条规则再扫一遍日志。
+
+- 扫描发生在 `JobManager.log()` —— 所有输出的唯一入口。识别到就立刻发 `hint` 事件，
+  **不必等任务结束**：批量更新动辄几分钟，那之后才提示就太晚了。
+- 去重键是「规则 + 关键词」（如 `bucket-helper-missing:dorado`），因此两个不同的 bucket 各报一条，
+  同一个问题只报一次。恢复任务时把已有建议传回扫描器，所以重启后不会重复产出。
+- 单任务封顶 `MAX_HINTS_PER_JOB` 条，避免异常输出把任务摘要撑大。
+- 建议里只带**动作描述**（打开表单 / 切视图），真正的写操作仍由用户在界面上确认 ——
+  不让日志内容直接驱动变更。
+- 规则**宁可漏报，不可误报**：误报会给出错误的操作按钮，比漏报更糟。因此每条规则都要求足够的
+  上下文（例如必须同时看到「模块加载失败」与 `buckets\<name>\scripts\` 路径），并由
+  `scripts/hints-selftest.ts` 用真实报错文本回归、用正常输出做误报护栏。
 
 ### 历史持久化
 

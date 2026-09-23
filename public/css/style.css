@@ -1010,7 +1010,14 @@ input::placeholder { color: var(--text-3); }
 .job-actions .icon-btn.is-tiny { color: var(--text-3); border-color: transparent; }
 .job-actions .icon-btn.is-tiny:hover:not(:disabled) { color: var(--text-0); background: var(--bg-3); border-color: var(--line); }
 .job-actions .icon-btn.is-tiny.is-danger:hover:not(:disabled) { color: var(--danger); background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
-.job-meta { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-3); }
+/* 任务行的元信息。
+   子项必须 flex: none + nowrap：普通 <span> 的 min-content 只有一个字宽，
+   而 flex 项默认可收缩 —— 空间不够时它们会被压成竖排（「退出码」三个字各占一行、
+   日期被折断），而不是让末尾的 .job-target 去截断（它有 overflow: hidden，
+   自动最小尺寸为 0，本来就该由它承担截断）。
+   真放不下时让「整项」换行，绝不把文字挤断。 */
+.job-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; font-size: 11px; color: var(--text-3); }
+.job-meta > span { flex: none; white-space: nowrap; }
 .job-target { font-family: var(--font-mono); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
 .job-error { font-size: 11px; color: var(--danger); margin-top: 2px; }
 
@@ -1034,6 +1041,20 @@ input::placeholder { color: var(--text-3); }
 
 .job-error-block { display: flex; align-items: flex-start; gap: 11px; padding: 10px 12px; margin-top: 8px; border-radius: var(--radius-sm); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line)); font-size: 11.5px; }
 .job-error-block .icon { color: var(--danger); width: 15px; height: 15px; flex: none; margin-top: 1px; }
+
+/* ---------- 任务建议（日志诊断） ---------- */
+/* 紧跟错误块、同样位于控制台下方，视觉与错误块保持一致。
+   .job-hints 必须 flex: none：它不该被压缩，空间压力仍然交给 .terminal 内部滚动消化；
+   建议条数多时自己在块内滚动（后端已按 MAX_HINTS_PER_JOB 封顶，这里只是兜底）。 */
+.job-hints { flex: none; display: flex; flex-direction: column; gap: 8px; margin-top: 8px; max-height: 40%; overflow-y: auto; }
+.job-hint { display: flex; align-items: flex-start; gap: 11px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--info-soft); border: 1px solid color-mix(in srgb, var(--info) 35%, var(--line)); font-size: 11.5px; }
+.job-hint.is-warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 38%, var(--line)); }
+.job-hint > .icon { color: var(--info); width: 15px; height: 15px; margin-top: 1px; }
+.job-hint.is-warn > .icon { color: var(--warn); }
+.job-hint-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.job-hint-body > strong { color: var(--text-0); font-size: 12px; }
+.job-hint-body > p { color: var(--text-1); line-height: 1.55; word-break: break-word; }
+.job-hint-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
 
 /* ---------- drawer / detail ---------- */
 .drawer-layer { position: fixed; inset: 0; z-index: var(--z-drawer); display: flex; justify-content: flex-end; background: rgba(6, 9, 14, 0.6); }

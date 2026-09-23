@@ -95,6 +95,8 @@ export function createJobs(shell) {
     detail: null,
     logs: [],
     truncated: false,
+    /** 当前任务诊断出的建议（带一键操作），渲染在控制台下方 */
+    hints: [],
     autoScroll: true,
     streamState: 'closed',
     cancelling: false,
@@ -191,6 +193,10 @@ export function createJobs(shell) {
       if (!options.keepLogs) {
         this.logs = [];
         this.truncated = false;
+        this.hints = [];
+        // 任务列表里的摘要已带建议（后端落盘后随 /jobs 返回），先显示出来，
+        // 不必等 /jobs/:id 的详情回来
+        this.pushHints(this.items.find((item) => item.id === id)?.hints);
       }
       this.streamState = 'connecting';
       shell.jobStreamState = 'connecting';
@@ -229,6 +235,8 @@ export function createJobs(shell) {
     async loadDetail(id) {
       try {
         this.detail = await api.get(`/jobs/${encodeURIComponent(id)}`);
+        // 详情里带着同一份建议（含重启后从 jobs.json 恢复的），补进来
+        this.pushHints(this.detail?.hints);
       } catch (error) {
         this.detail = null;
         shell.toast(errorMessage(error), 'danger');
@@ -252,6 +260,12 @@ export function createJobs(shell) {
           this.truncated = true;
         }
         if (this.autoScroll) afterRender(() => this.scrollToBottom());
+        return;
+      }
+
+      if (type === 'hint' && payload) {
+        // 建议在任务执行中途就会到达（批量更新时可能隔着好几分钟的日志）
+        this.pushHints([payload.hint]);
         return;
       }
 
@@ -312,6 +326,40 @@ export function createJobs(shell) {
       const index = this.items.findIndex((item) => item.id === id);
       if (index >= 0) this.items[index] = { ...this.items[index], ...patch };
       if (this.detail?.id === id) this.detail = { ...this.detail, ...patch };
+    },
+
+    /**
+     * 追加建议，按 id 去重。
+     *
+     * 去重不能省：SSE 断线重连会重放历史事件，任务详情里也带着同一份建议，
+     * 两条路径都会把它们送进来（后端同样按 id 去重，两边都挡一道）。
+     */
+    pushHints(hints) {
+      if (!Array.isArray(hints)) return;
+      for (const hint of hints) {
+        if (!hint || typeof hint.id !== 'string') continue;
+        if (this.hints.some((item) => item.id === hint.id)) continue;
+        this.hints.push(hint);
+      }
+    },
+
+    /**
+     * 执行建议上的一键操作。
+     *
+     * 后端只给「动作描述」，这里把它接到已有界面上：真正的写操作（添加 bucket）
+     * 仍然要在表单里由用户确认，不由日志内容直接触发。
+     */
+    runHintAction(hint) {
+      const action = hint && hint.action;
+      if (!action) return;
+      if (action.kind === 'bucket.add' && action.bucket) {
+        shell.setView('buckets');
+        shell.buckets.openAddForm(action.bucket);
+        return;
+      }
+      if (action.kind === 'view' && action.view) {
+        shell.setView(action.view);
+      }
     },
 
     scrollToBottom() {

@@ -50,7 +50,17 @@ export function createBuckets(shell) {
     },
 
     openForm() {
-      this.form = { open: true, name: '', repoUrl: '', error: '', submitting: false };
+      this.openAddForm('');
+    },
+
+    /**
+     * 打开添加表单并预填名称。
+     *
+     * 供任务页的「建议」按钮使用：日志里只看得出缺哪个 bucket，看不出它的仓库地址，
+     * 因此只预填名称 —— 地址要么由用户填，要么从 known 列表里点。
+     */
+    openAddForm(name = '') {
+      this.form = { open: true, name: String(name ?? '').trim(), repoUrl: '', error: '', submitting: false };
     },
 
     closeForm() {

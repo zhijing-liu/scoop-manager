@@ -1057,6 +1057,27 @@
                      x-text="jobs.detail && jobs.detail.error && jobs.detail.error.detail ? JSON.stringify(jobs.detail.error.detail, null, 2) : ''"></pre>
               </div>
             </div>
+
+            <!-- 日志诊断建议：紧跟在控制台下方（与错误块同列，视觉一致）。
+                 每条建议自带一键操作，动作由后端从日志内容推出、这里只负责接到界面上。 -->
+            <div class="job-hints" x-show="jobs.hints.length > 0">
+              <template x-for="hint in jobs.hints" :key="hint.id">
+                <div class="job-hint" :class="'is-' + hint.level">
+                  <svg class="icon" x-show="hint.level === 'warn'"><use href="#i-alert"></use></svg>
+                  <svg class="icon" x-show="hint.level !== 'warn'"><use href="#i-info"></use></svg>
+                  <div class="job-hint-body">
+                    <strong x-text="hint.title"></strong>
+                    <p x-text="hint.message"></p>
+                    <div class="job-hint-actions" x-show="hint.action">
+                      <button type="button" class="btn btn-ghost is-tiny" @click="jobs.runHintAction(hint)">
+                        <svg class="icon"><use href="#i-zap"></use></svg>
+                        <span x-text="hint.action ? hint.action.label : ''"></span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
           </div>
         </div>
       </section>

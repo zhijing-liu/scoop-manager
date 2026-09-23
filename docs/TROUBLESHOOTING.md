@@ -666,3 +666,46 @@ function failed($app, $global) {
 > （fastgithub 就是这样），所以界面读的是**当前** bucket 清单，
 > 而不是 `apps\<app>\current\manifest.json` 那份安装快照。
 
+---
+
+## 23. 更新时满屏红字：未能加载指定的模块 `...\buckets\<名字>\scripts\...`
+
+**现象**：更新某个应用时日志里出现这样的连锁报错，但应用最后仍然装成功了：
+
+```
+Import-Module : 未能加载指定的模块"G:\scoop\buckets\dorado\scripts\DoradoUtils.psm1"，因为在任何模块目录中都没有找到有效模块文件。
+Mount-ExternalRuntimeData : 无法将"Mount-ExternalRuntimeData"项识别为 cmdlet、函数、脚本文件或可运行程序的名称。
+Remove-Module : 没有删除任何模块。请确认要删除的模块的规范正确，并且运行空间中存在这些模块。
+```
+
+**先排除最常见的一种误判：这不是权限问题**，也**不要**改用管理员身份重试。
+
+- `Import-Module` 的失败类别是 `ResourceUnavailable` / 文件找不到（`FileNotFoundException`）；
+  权限问题会显示「拒绝访问」或 `UnauthorizedAccessException`。
+- 管理员身份运行普通的 `scoop update` 反而有副作用（文件属主、安装范围），只有 `-g` 全局安装才需要提权。
+
+**原因**：该应用的清单脚本硬编码了**另一个 bucket** 的辅助模块，例如：
+
+```powershell
+Import-Module $(Join-Path $(Find-BucketDirectory -Root -Name dorado) scripts/DoradoUtils.psm1)
+Mount-ExternalRuntimeData -Source "$persist_dir\UserData" -Target "$env:APPDATA\bilibili"
+```
+
+它要求本地存在一个**名为 `dorado`** 的 bucket。若你装的是它的镜像（例如把 `kkzzhizhou/scoop-apps`
+的内容并进了 `third`），模块文件其实躺在 `buckets\third\scripts\` 下，而脚本按 bucket 名去
+`buckets\dorado\scripts\` 找 —— 找不到，于是紧随其后的 `Mount-ExternalRuntimeData` 也不存在
+（它正是该模块里定义的函数），再往下的 `Remove-Module` 同样报错。**三条报错是同一个原因**，不是三个问题。
+
+**影响**：脚本的其余步骤照常执行，应用多半仍然安装成功；唯一被跳过的是「把用户数据目录挂到 scoop 的
+`persist` 目录」这一步。数据仍在 `%APPDATA%\<应用>` 里，**不会丢**，只是不随 scoop 迁移/清理
+（也意味着用「卸载（彻底清理）」删的是 `persist`，不会误删这些数据）。
+
+**处理**：
+
+1. 任务页此时会在日志下方给出**建议块**，点「添加 Bucket」直接跳到 Bucket 页（名称已预填），
+   填上仓库地址即可添加；
+2. 命令行等价操作：`scoop bucket add dorado <仓库地址>`（地址在日志里看不出来，需要你确认来源）；
+3. 加好后重新执行一次同样的更新即可补齐这一步；不在意 persist 挂载的话也可以直接忽略。
+
+> 判定条件与文案见 `src/jobs/hints.ts`，回归用例见 `scripts/hints-selftest.ts`（含正常输出零误报的护栏）。
+

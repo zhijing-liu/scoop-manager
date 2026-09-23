@@ -829,6 +829,7 @@ PUT /api/scoop/path
         "exitCode": null,
         "canCancel": true,
         "error": null,
+        "hints": [],
         "seq": 128
       }
     ],
@@ -846,6 +847,41 @@ PUT /api/scoop/path
 - 之所以不用 `target` 反推：`target` 只是给人看的展示串（逗号拼接的应用名），反推会丢掉 `global` / `arch` / `force` 等参数 —— 全局应用甚至会被按用户范围重放。
 - 落盘前会做收敛：路径必须是 `/api/...` 且不含 `..`，请求体序列化后不超过 16 KB，否则整个字段置为 `null`（避免把几 MB 的 body 反复写进 `jobs.json`）。
 - 该字段会随任务历史一起持久化并在重启后恢复，因此**重放前必须把它当作不可信输入**（内置界面会再次校验路径前缀）。
+
+**`hints`（日志建议）**
+
+任务执行过程中，后端逐行扫描日志，命中内置规则时在 `hints` 里追加一条建议，并实时推送 `hint` 事件。
+它描述的是「Scoop 没报失败、但有步骤需要人处理」的情况，因此**与 `error` 互不代替**：一个任务可以
+`error: null` 而带若干条建议（例如应用装成功了，但清单脚本依赖的 bucket 没装 —— 见
+[TROUBLESHOOTING 第 22 节](./TROUBLESHOOTING.md)）。
+
+```json
+{
+  "id": "bucket-helper-missing:dorado",
+  "level": "warn",
+  "title": "清单脚本依赖的 bucket「dorado」没有安装",
+  "message": "脚本要从 buckets\\dorado\\scripts\\ 加载 DoradoUtils.psm1，但本地没有名为「dorado」的 bucket，因此这一步被跳过了…",
+  "action": { "kind": "bucket.add", "bucket": "dorado", "label": "添加 Bucket「dorado」" }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 去重键：`<规则>` 或 `<规则>:<关键词>`（关键词用于区分不同 bucket / 应用），同一任务内唯一 |
+| `level` | `warn` = 有步骤没做成；`info` = 只是排查方向 |
+| `title` / `message` | 直接展示的文案，已按上限裁剪 |
+| `action` | 可选的一键操作，见下表 |
+
+`action` 只是**动作描述**，由前端接到已有界面上（写操作仍然要用户在界面上确认）：
+
+| `kind` | 附带字段 | 前端行为 |
+| --- | --- | --- |
+| `bucket.add` | `bucket` | 切到 Bucket 页并打开添加表单（预填名称；仓库地址日志里看不出来，由用户填） |
+| `view` | `view` | 切到指定视图（`buckets` / `config` / `dashboard` …） |
+
+- 单任务最多 5 条，超出不再追加。
+- 建议随任务摘要持久化，重启后恢复；恢复时按不可信输入做形状校验。
+- 当前内置规则：清单脚本依赖的 bucket 缺失、`Couldn't find manifest`、哈希校验失败、下载/连接失败、权限不足。
 
 ### POST `/api/jobs/clear`
 
@@ -869,6 +905,7 @@ PUT /api/scoop/path
     "status": "succeeded",
     "exitCode": 0,
     "seq": 128,
+    "hints": [],
     "truncated": false,
     "logs": [{ "seq": 1, "ts": 1730000000100, "stream": "stdout", "text": "Installing '7zip' (24.08)..." }]
   }
@@ -913,6 +950,7 @@ PUT /api/scoop/path
 | --- | --- | --- |
 | `log` | 一行输出 | `JobEvent`（含 `stream` / `text`） |
 | `status` | 状态变化（如 queued → running） | `JobEvent`（含 `status`） |
+| `hint` | 识别到一条日志建议（任务执行中途就会到达） | `JobEvent`（含 `hint`） |
 | `done` | 任务终态 | `JobEvent`（含 `status` / `exitCode` / `error`） |
 | `notice` | 提示（如历史日志被裁剪） | `{ code, message }` |
 | `ping` | 心跳（每 15 秒一次） | `{}` |
@@ -926,12 +964,13 @@ PUT /api/scoop/path
 interface JobEvent {
   seq: number;                    // 单调递增序号
   ts: number;                     // 毫秒时间戳
-  type: 'log' | 'status' | 'done';
+  type: 'log' | 'status' | 'done' | 'hint';
   stream?: 'stdout' | 'stderr' | 'system';  // type === 'log'
   text?: string;                  // type === 'log'
   status?: JobStatus;             // type === 'status' | 'done'
   exitCode?: number | null;       // type === 'done'
   error?: { code: string; message: string; detail?: unknown };  // type === 'done'
+  hint?: JobHint;                 // type === 'hint'
 }
 ```
 

@@ -15,7 +15,7 @@ import { normalizeBasePath } from './utils/paths.js';
 const logger = createLogger('config');
 
 export const APP_NAME = 'scoop-manager';
-export const APP_VERSION = '1.2.1';
+export const APP_VERSION = '1.3.0';
 export const APP_DESCRIPTION = 'Scoop 的 Web GUI 管理器';
 
 export const DATA_DIR = normalize(process.env['SCOOP_MANAGER_HOME'] ?? join(homedir(), '.scoop-manager'));

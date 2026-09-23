@@ -84,6 +84,8 @@ export function openJobStream(jobId, handlers = {}) {
 
     source.addEventListener('log', relay('log'));
     source.addEventListener('status', relay('status'));
+    // 日志诊断建议：识别到就给出来，不必等任务结束
+    source.addEventListener('hint', relay('hint'));
     source.addEventListener('done', relay('done'));
     source.addEventListener('notice', relay('notice'));
 
