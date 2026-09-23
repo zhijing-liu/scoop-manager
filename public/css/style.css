@@ -1055,6 +1055,8 @@ input::placeholder { color: var(--text-3); }
 .detail-block h4 { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-2); }
 .detail-block h4 .btn { margin-left: auto; }
 .detail-block > .muted { font-size: 11.5px; }
+/* 详情块里的动作按钮行（例如残骸的「清理残骸」） */
+.detail-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 
 /* ---------- toast ---------- */
 .toasts { position: fixed; top: 14px; right: 14px; z-index: 120; display: flex; flex-direction: column; gap: 8px; max-width: 360px; pointer-events: none; }

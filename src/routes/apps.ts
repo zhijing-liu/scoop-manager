@@ -16,12 +16,15 @@ import {
 } from '../utils/validate.js';
 import { startJob, translateResult } from '../jobs/execute.js';
 import {
+  computeAppIssues,
   computeUpdates,
   installedApps,
   readManifestRaw,
   refreshScoopStatusCache,
   setScoopStatusCache,
 } from '../scoop-core/installed.js';
+import type { AppIssue, InstalledApp } from '../scoop-core/installed.js';
+import { cleanRemains } from '../scoop-core/remains.js';
 import { manifestIndex } from '../scoop-core/manifest.js';
 import { buildFlags, HOLD, INSTALL, RESET, UNINSTALL, UPDATE } from '../scoop-core/options.js';
 import type { JobKind } from '../jobs/types.js';
@@ -30,12 +33,32 @@ export const appRoutes = new Hono();
 
 const LONG = 30 * 60 * 1000;
 
+/** 没有任何状态问题的应用（computeAppIssues 会给每个应用都建条目，这里只是兜底）。 */
+const NO_ISSUE: AppIssue = { installFailed: false, manifestRemoved: false, missingDeps: [] };
+
+/**
+ * 把状态问题并进应用对象。
+ *
+ * 字段直接摊平在应用上（而不是嵌一层 issue），前端列表与详情抽屉
+ * 都能直接用 `app.missingDeps` 判定，不必做两次查找。
+ */
+function withIssue(app: InstalledApp, issues: Map<string, AppIssue>): InstalledApp & AppIssue {
+  return { ...app, ...(issues.get(app.name.toLowerCase()) ?? NO_ISSUE) };
+}
+
 // ------------------------------------------------------------------ 查询（具体路径优先）
 
 appRoutes.get('/apps', async (c) => {
   const force = toBoolean(c.req.query('force'), false);
   const items = await installedApps.list(force);
-  return c.json(envelope({ items }));
+  // 缺依赖 / 安装失败随列表一次性下发，前端不必再打一轮请求
+  const issues = await computeAppIssues(items);
+  return c.json(
+    envelope({
+      items: items.map((app) => withIssue(app, issues.byName)),
+      health: { source: issues.source, checkedAt: issues.checkedAt },
+    }),
+  );
 });
 
 appRoutes.get('/apps/updates', async (c) => {
@@ -105,11 +128,14 @@ appRoutes.get('/apps/:name', async (c) => {
   await manifestIndex.ensure();
   const app = await installedApps.get(name);
   const raw = app ? await readManifestRaw(app.path) : null;
+  // 依赖是否缺失要按「全部已安装应用」来判断，所以传整份列表、只取这一个的结果
+  const issues = app ? await computeAppIssues(await installedApps.list()) : null;
   return c.json(
     envelope({
-      installed: app,
+      installed: app && issues ? withIssue(app, issues.byName) : app,
       manifest: raw,
       available: manifestIndex.find(name),
+      health: issues ? { source: issues.source, checkedAt: issues.checkedAt } : null,
     }),
   );
 });
@@ -173,6 +199,39 @@ appRoutes.post('/apps/uninstall', async (c) => {
         await ctx.scoop(args, { label: `scoop uninstall ${apps.join(' ')}`, timeoutMs: 15 * 60 * 1000 }),
         '卸载',
       ),
+    onSettled: () => installedApps.invalidate(),
+  });
+
+  return c.json(envelope({ job }), 202);
+});
+
+/**
+ * 清理安装残骸（`apps\<name>` 在、`install.json` 读不出来）。
+ *
+ * 为什么要单开一条：这种状态下 `scoop uninstall` 会认为"未安装"从而什么都不做
+ * （见 scoop-core/remains.ts 顶部注释），官方命令没有出路。这里按 Scoop 卸载时
+ * 相同的方式清理，并且**只对残骸生效** —— 正常应用必须走卸载，不允许绕过 Scoop。
+ */
+appRoutes.post('/apps/remains', async (c) => {
+  const body = await safeJsonBody(c);
+  const name = assertName(body.name, '应用名称');
+  const purge = toBoolean(body.purge, true);
+
+  const job = startJob({
+    kind: 'app.clean-remains',
+    title: `清理安装残骸：${name}${purge ? '（同时删除用户数据）' : ''}`,
+    target: name,
+    request: { method: 'POST', path: '/api/apps/remains', body },
+    execute: async (ctx) => {
+      const result = await cleanRemains(name, { purge });
+      ctx.log(`已删除应用目录 ${result.appDir}`);
+      if (result.removedShims.length > 0) ctx.log(`已删除 shim：${result.removedShims.join('、')}`);
+      if (result.removedPersist.length > 0) ctx.log(`已删除用户数据：${result.removedPersist.join('、')}`);
+      if (result.removedShims.length === 0 && result.removedPersist.length === 0) {
+        ctx.log('未发现残留的 shim 与用户数据。');
+      }
+      return { status: 'succeeded' as const, exitCode: 0, error: null };
+    },
     onSettled: () => installedApps.invalidate(),
   });
 

@@ -89,6 +89,27 @@ function createContext(jobId: string): JobContext {
   };
 }
 
+/**
+ * Scoop 的 fatal 提示行。
+ *
+ * Scoop 里有两个"报错"函数（lib/core.ps1）：
+ *   function error($msg) { write-host "ERROR $msg" -f darkred }              ← 只打印，不退出
+ *   function abort($msg, $exit_code=1) { write-host $msg -f red; exit ... }  ← 会退出
+ * 也就是说明明是失败，`error()` 只往 stdout 写一行 `ERROR xxx`，进程退出码仍然是 0。
+ * 只看退出码就会把「什么都没做」当成成功 —— 例如对安装残骸执行
+ * `scoop uninstall pnpm` 会打印 "ERROR 'pnpm' isn't installed." 然后返回 0。
+ *
+ * 匹配规则刻意收紧到「行首 ERROR + 空白」：7-Zip 的 "ERROR:" 带冒号、
+ * git 的是小写 "error:"，都不会被误判成 Scoop 的 fatal。
+ */
+const SCOOP_ERROR_LINE = /^ERROR\s+(\S.*)$/m;
+
+/** 失败时附在 error.detail 里的原始输出（截断，避免把 jobs.json 撑大）。 */
+function outputTail(text: string, limit = 2000): string {
+  const value = text ?? '';
+  return value.length > limit ? `…${value.slice(-limit)}` : value;
+}
+
 /** 把执行结果或异常翻译成任务终态。 */
 export function translateResult(result: RunResult, label: string): JobOutcome {
   if (result.canceled) {
@@ -104,6 +125,21 @@ export function translateResult(result: RunResult, label: string): JobOutcome {
       error: { code: 'COMMAND_FAILED', message: `${label} 执行失败（退出码 ${result.code}）。` },
     };
   }
+
+  // 退出码为 0 也可能失败：见上面 SCOOP_ERROR_LINE 的说明
+  const fatal = SCOOP_ERROR_LINE.exec(result.stdout ?? '');
+  if (fatal) {
+    return {
+      status: 'failed',
+      exitCode: 0,
+      error: {
+        code: 'COMMAND_FAILED',
+        message: `${label} 未完成：${fatal[1].trim()}`,
+        detail: { stdout: outputTail(result.stdout), stderr: outputTail(result.stderr) },
+      },
+    };
+  }
+
   return { status: 'succeeded', exitCode: 0, error: null };
 }
 

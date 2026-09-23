@@ -45,18 +45,49 @@ const logger = createLogger('apps');
 //
 //  注意：
 //    - 列宽按最长内容自适应，不做固定偏移，用「≥2 个连续空格」切列；
-//    - Latest Version 为空（应用已是最新）的行应被跳过；
-//    - Info 列内容多样（hold、sudo、arch mismatch 等），暂不细分类型，后续可扩展。
+//    - Latest Version 为空（应用已是最新）的行**不能丢**：上面那行 fastgithub 就是
+//      典型案例 —— 它没有新版可用，但 Missing Dependencies 列写着 sudo。
+//      旧实现把这类行整行跳过，于是「缺依赖」「Install failed」在界面上永远看不到；
+//    - 只有「有更新」的行才进可更新列表，其余行用于状态展示（见 ScoopStatusRow）；
+//    - Info 列由 Scoop 用逗号拼多个条目（Held package / Install failed /
+//      Deprecated / Manifest removed），逐条拆分后按关键词识别。
 // ==========================================================================
 
 /** 缓存 TTL：5 分钟。scoop status 结果本质是 bucket manifest 的快照，5 分钟窗口内重跑几乎不会有新发现。 */
 const SCOOP_STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * `scoop status` 表格里的一行。
+ *
+ * 与 UpdateCandidate 的区别：这里保留**所有**被 Scoop 报出来的行，
+ * 包括那些「没有新版本可用、但有别的问题」的行。
+ */
+export interface ScoopStatusRow {
+  name: string;
+  installed: string;
+  /** 最新版本；为空表示已是最新 */
+  available: string;
+  /** Missing Dependencies 列（Scoop 用 " | " 拼接多个依赖） */
+  missingDeps: string[];
+  /** Info 列的条目："Install failed" / "Held package" / "Deprecated" / "Manifest removed" */
+  info: string[];
+  hold: boolean;
+}
 
 interface ScoopStatusCacheEntry {
   /** scoop status 命令 stdout（可能含 WARN 头、空行、表头/表尾） */
   stdout: string;
   /** 解析出的可更新条目 */
   items: UpdateCandidate[];
+  /**
+   * 表格里的全部有效行（含没有新版可用的行）。
+   *
+   * 必须单独留一份：`scoop status` 只打印「有情况」的应用
+   * （源码里的过滤条件见 scoop-status.ps1），而「缺依赖 / Install failed /
+   * Held package」恰恰只出现在**没有更新**的行上 —— 旧实现把这类行整行跳过，
+   * 于是这些状态在界面上永远看不到，命令行里却有。
+   */
+  rows: ScoopStatusRow[];
   cachedAt: number;
 }
 
@@ -83,10 +114,22 @@ export function clearScoopStatusCache(): void {
 }
 
 export function setScoopStatusCache(stdout: string): ScoopStatusCacheEntry {
-  const items = parseScoopStatus(stdout);
-  scoopStatusCache = { stdout, items, cachedAt: Date.now() };
-  logger.debug(`scoop status 缓存已更新：${items.length} 个可更新应用`);
+  const { updates, rows } = parseScoopStatus(stdout);
+  scoopStatusCache = { stdout, items: updates, rows, cachedAt: Date.now() };
+  logger.debug(`scoop status 缓存已更新：${updates.length} 个可更新 / 共 ${rows.length} 行状态`);
   return scoopStatusCache;
+}
+
+/**
+ * 取「应用名（小写）→ scoop status 行」的映射，缓存过期或没跑过时返回 null。
+ *
+ * 返回 null 时调用方必须回退到本地清单比对 —— 这是本程序能在没跑过
+ * `scoop status` 的情况下也显示缺依赖的原因。
+ */
+export function getScoopStatusRows(): Map<string, ScoopStatusRow> | null {
+  const cache = getScoopStatusCache();
+  if (!cache) return null;
+  return new Map(cache.rows.map((row) => [row.name.toLowerCase(), row]));
 }
 
 /**
@@ -139,9 +182,11 @@ export async function refreshScoopStatusCache(): Promise<void> {
  *   Name | Installed Version | Latest Version | Missing Dependencies | Info
  *   某些老版本可能只有前 3 列，本函数动态容忍。
  *
- * Latest Version 为空（应用已是最新）的行跳过，不加入结果。
+ * 返回两份结果：
+ *   updates —— 「有新版本」的行，供可更新列表使用；
+ *   rows    —— 全部有效行，供状态展示（缺依赖 / Install failed）使用。
  */
-export function parseScoopStatus(stdout: string): UpdateCandidate[] {
+export function parseScoopStatus(stdout: string): { updates: UpdateCandidate[]; rows: ScoopStatusRow[] } {
   const lines = stdout.split(/\r?\n/);
 
   // 先找表头行
@@ -152,7 +197,7 @@ export function parseScoopStatus(stdout: string): UpdateCandidate[] {
       break;
     }
   }
-  if (headerIdx === -1) return [];
+  if (headerIdx === -1) return { updates: [], rows: [] };
 
   const header = lines[headerIdx];
   const SEP_NAMES = ['Name', 'Installed Version', 'Latest Version', 'Missing Dependencies', 'Info'];
@@ -166,6 +211,7 @@ export function parseScoopStatus(stdout: string): UpdateCandidate[] {
   colStarts.push(header.length); // 末列的结束位置
 
   const items: UpdateCandidate[] = [];
+  const rows: ScoopStatusRow[] = [];
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const raw = lines[i];
     const line = raw.trim();
@@ -176,29 +222,60 @@ export function parseScoopStatus(stdout: string): UpdateCandidate[] {
     if (/^(WARN|ERROR|INFO)\b/i.test(line)) continue;
 
     const cols: string[] = [];
-    for (let c = 0; c < colStarts.length - 1; c++) {
-      const piece = raw.slice(colStarts[c], colStarts[c + 1]).trim();
+    const lastCol = colStarts.length - 2;
+    for (let c = 0; c <= lastCol; c++) {
+      // 末列必须切到行尾：Format-Table 的列宽取「表头与所有单元格里的最大值」，
+      // 表头里的 "Info" 只有 4 个字符，而内容可能是 "Install failed"（14 个）。
+      // 按表头宽度截断会把末列切掉 —— 旧实现就是这样，所以 Install failed /
+      // Held package 这类 Info 内容从来没被真正解析出来过。
+      const piece = c === lastCol
+        ? raw.slice(colStarts[c]).trim()
+        : raw.slice(colStarts[c], colStarts[c + 1]).trim();
       cols.push(piece);
     }
     if (cols.length < 3) continue;
 
     const [name, installed, latest] = cols;
     if (!name) continue;
-    // Latest Version 为空 / 全是 - 表示已是最新
+
+    // 第 4 列缺依赖（Scoop 用 " | " 拼多个）、第 5 列 Info（逗号拼多个）
+    const missingDeps = (cols[3] ?? '')
+      .split('|')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const info = (cols[4] ?? '')
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const hold = /hold|locked/i.test([...missingDeps, ...info].join(' '));
+
+    // 整行先收下：没有更新版本的行同样可能带着「缺依赖 / Install failed」
+    rows.push({
+      name,
+      installed: installed || '',
+      available: latest ?? '',
+      missingDeps,
+      info,
+      hold,
+    });
+
+    // Latest Version 为空 / 全是 - 表示已是最新：不进可更新列表，但上面已留下状态行
     if (!latest || /^[-]+$/.test(latest)) continue;
 
-    const restInfo = cols.slice(3).join(' ');
     items.push({
       name,
       installed: installed || '',
       available: latest,
       bucket: null, // scoop status 输出不含 bucket 名
       global: false,
-      hold: /hold|locked/i.test(restInfo),
+      hold,
     });
   }
 
-  return items.sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    updates: items.sort((a, b) => a.name.localeCompare(b.name)),
+    rows,
+  };
 }
 
 export interface InstalledApp {
@@ -218,6 +295,14 @@ export interface InstalledApp {
   shims: string[];
   /** 是否为 scoop 自身 */
   isScoop: boolean;
+  /**
+   * 安装不完整：`apps/<name>` 目录在，但 `current/install.json` 读不出来。
+   * 等价于 `scoop status` 里的 "Install failed"（判定逻辑与 Scoop 的 failed() 一致），
+   * 典型成因是安装/更新中断留下的残骸。未启用 NO_JUNCTION 时该判定是精确的。
+   */
+  installFailed: boolean;
+  /** `current/manifest.json` 缺失：清单已从 bucket 移除，或安装本身不完整 */
+  manifestRemoved: boolean;
 }
 
 interface InstallInfo {
@@ -303,12 +388,23 @@ class InstalledAppsService {
     for (const name of names) {
       const currentDir = join(appsDir, name, 'current');
       const manifest = await this.readManifest(join(currentDir, 'manifest.json'));
-      const installInfo = (await this.readInstallInfo(join(currentDir, 'install.json'))) ?? {};
+      // 保留 null / {} 的区别：读不到 install.json 就是 Scoop 眼里的「安装失败」
+      const rawInstallInfo = await this.readInstallInfo(join(currentDir, 'install.json'));
+      const installInfo = rawInstallInfo ?? {};
 
       const version =
         (manifest && typeof manifest.version === 'string' && manifest.version) ||
         listDirs(join(appsDir, name, 'versions')).slice(-1)[0] ||
         '未知';
+
+      /**
+       * scoop 自身不是"安装"来的：它是 git 克隆 + `bin/scoop.ps1`，
+       * 既没有 `install.json` 也没有 `manifest.json`。
+       * 不排除它就会被判成残骸 —— 界面打上「安装异常」并给出「清理残骸」按钮，
+       * 一点就把整套 Scoop 删了。`scoop status` 自己也是这么排除的
+       * （scoop-status.ps1 里的 `Where-Object name -NE 'scoop'`）。
+       */
+      const isScoop = name.toLowerCase() === 'scoop';
 
       const binNames = this.collectBinNames(manifest);
       const shims = new Set<string>();
@@ -328,7 +424,9 @@ class InstalledAppsService {
         homepage: manifest && typeof manifest.homepage === 'string' ? manifest.homepage : '',
         updatedAt: statSafe(currentDir)?.mtimeMs ?? null,
         shims: [...shims].sort(),
-        isScoop: name.toLowerCase() === 'scoop',
+        isScoop,
+        installFailed: !isScoop && rawInstallInfo === null,
+        manifestRemoved: !isScoop && manifest === null,
       });
     }
 
@@ -486,5 +584,79 @@ export async function computeUpdates(force = false): Promise<UpdateSummary> {
         : '结果基于本地 bucket 数据，可能滞后于实际最新版本。建议执行一次「检查更新状态」以获取权威结果。',
     source: 'manifest',
     cachedAt: null,
+  };
+}
+
+// ==========================================================================
+//  状态问题（缺依赖 / 安装失败 / 清单缺失）
+// ==========================================================================
+
+/** 单个应用的状态问题，随 /api/apps 的每一项下发。 */
+export interface AppIssue {
+  /** 与 `scoop status` 的 "Install failed" 同义：目录在、但 install.json 不可读 */
+  installFailed: boolean;
+  /** 清单缺失：current/manifest.json 读不出来 */
+  manifestRemoved: boolean;
+  /** 缺失依赖（按应用名比对，与 Scoop 的语义一致） */
+  missingDeps: string[];
+}
+
+export interface AppIssuesResult {
+  /** key 为小写应用名 */
+  byName: Map<string, AppIssue>;
+  /** 'status' = 来自 scoop status 的权威结果；'scan' = 本地 bucket 清单比对 */
+  source: 'status' | 'scan';
+  /** source === 'status' 时为那次 status 的完成时间 */
+  checkedAt: number | null;
+}
+
+/**
+ * 汇总已安装应用的状态问题。
+ *
+ * 数据源优先级与 computeUpdates 一致：
+ *   1) 新鲜的 `scoop status` 结果（权威）—— 它读的是**当前** bucket 清单，还联网复核；
+ *   2) 本地 bucket 清单索引的 depends —— 毫秒级，不需要 PowerShell。
+ *
+ * 为什么不能只看 `apps/<app>/current/manifest.json`：那是安装当时的快照。
+ * 依赖完全可能是后来才加到 bucket 清单里的 —— 本机 fastgithub 正是如此
+ * （安装时清单里没有 depends，之后 third bucket 才加上 `depends: sudo`），
+ * 只读已安装副本会永远看不到这条缺失依赖，而 `scoop status` 一眼就能看到。
+ *
+ * 依赖按「应用名」比对，不看命令是否存在 —— 与 Scoop 一致：系统里已经有
+ * 原生的 `C:\WINDOWS\system32\sudo.exe`，`scoop status` 照样报 sudo 缺失。
+ *
+ * 另外，`scoop status` 只给「有情况」的应用打行（见 scoop-status.ps1 的过滤），
+ * 所以有行就采信它的结论、没行才回退到本地比对 —— 两边不会互相打架。
+ */
+export async function computeAppIssues(apps: InstalledApp[]): Promise<AppIssuesResult> {
+  await manifestIndex.ensure();
+  const installedNames = new Set(apps.map((app) => app.name.toLowerCase()));
+  const statusRows = getScoopStatusRows();
+  const byName = new Map<string, AppIssue>();
+
+  for (const app of apps) {
+    const row = statusRows?.get(app.name.toLowerCase());
+
+    let missingDeps = row?.missingDeps ?? [];
+    if (!row) {
+      const candidates = manifestIndex.find(app.name);
+      const preferred =
+        (app.bucket ? candidates.find((entry) => entry.bucket.toLowerCase() === app.bucket?.toLowerCase()) : undefined) ??
+        candidates[0];
+      // depends 允许写成 `<bucket>/<app>`，按名字比对时取末段
+      missingDeps = (preferred?.depends ?? []).map((dep) => dep.split('/').pop() ?? dep);
+    }
+
+    byName.set(app.name.toLowerCase(), {
+      installFailed: row ? row.info.some((item) => /install failed/i.test(item)) : app.installFailed,
+      manifestRemoved: row ? row.info.some((item) => /manifest removed/i.test(item)) : app.manifestRemoved,
+      missingDeps: missingDeps.filter((dep) => !installedNames.has(dep.toLowerCase())),
+    });
+  }
+
+  return {
+    byName,
+    source: statusRows ? 'status' : 'scan',
+    checkedAt: statusRows ? (getScoopStatusCache()?.cachedAt ?? null) : null,
   };
 }

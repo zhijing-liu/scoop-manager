@@ -7,6 +7,7 @@
  *   - PowerShell 启动 + 进程管理（powershell.ts / runner.ts / queue.ts）
  *   - Scoop 环境定位 + manifest 索引 + 已安装应用扫描（locator.ts / installed.ts / manifest.ts）
  *   - Bucket / Cache / Config / Proxy（bucket*.ts / cache.ts / config.ts / proxy.ts）
+ *   - 安装残骸清理（remains.ts —— 补 Scoop 自身 uninstall 处理不了的那一半）
  *   - 高层操作入口（client.ts —— install/update/uninstall/...）
  *
  * 与外部解耦约定：
@@ -26,6 +27,7 @@ export * from './locator.js';
 export * from './installer.js';
 export * from './options.js';
 export * from './installed.js';
+export * from './remains.js';
 export * from './manifest.js';
 export * from './bucket-internal.js';
 export { buildRemoveArgs as bucketRemoveArgs, buildAddArgs, buildBucketSyncPlan, listBuckets, knownBuckets, currentBucketNames, type BucketInfo, type BucketSyncPlan } from './bucket.js';

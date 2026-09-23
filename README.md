@@ -108,6 +108,11 @@ bun run desktop:release   # 一条命令走完：编译 sidecar → 生成图标
 | `Scoop Manager_<版本>_x64-setup.exe` | 桌面应用安装包（推荐）：托盘常驻、**不占用任何端口** |
 | `scoop-manager-portable-<版本>.exe` | 单文件服务版：双击启动本地 Web 服务并自动打开浏览器，也可交给 pm2 |
 
+> 收拢（`bun run desktop:collect`，即 `desktop:release` 的最后一步）只取**当前版本**的安装包，
+> 并把 `desktop/target/release/bundle/nsis/` 里上次构建留下的过期产物一并删掉。
+> Tauri 不会自己清理那个目录，否则旧版本会被原样搬进 `release/`
+> —— 而工作流的产物校验要求「恰好一个安装包」，会直接失败。
+
 发布新版本：
 
 ```bash

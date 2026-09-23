@@ -457,6 +457,13 @@
             <span>只看可更新</span>
             <em class="count" x-text="installed?.updatableCount ?? 0"></em>
           </button>
+          <button type="button" class="btn btn-ghost is-small" :class="{ 'is-on': installed.onlyIssues }"
+                  @click="installed.onlyIssues = !installed.onlyIssues"
+                  :title="(installed.onlyIssues ? '显示全部已安装应用' : '只显示有状态问题的应用（缺依赖 / 安装失败 / 清单缺失）') + '　' + installed.healthNote">
+            <svg class="icon"><use href="#i-alert"></use></svg>
+            <span>只看异常</span>
+            <em class="count" x-text="installed?.issueCount ?? 0"></em>
+          </button>
           <button type="button" class="btn btn-ghost" @click="installed.load(true)" :disabled="installed.loading">
             <svg class="icon" :class="{ 'is-spinning': installed.loading }"><use href="#i-refresh"></use></svg>
             <span>重新扫描</span>
@@ -537,6 +544,16 @@
                           <span class="tag is-global" x-show="app.global">全局</span>
                           <span class="tag is-warn" x-show="app.hold">已锁定</span>
                           <span class="tag is-up" x-show="installed.updatableNames.has(app.name)">可更新</span>
+                          <!-- 状态问题：与 scoop status 的 Install failed / Missing Dependencies 一一对应。
+                               判定在后端（/apps 下发），来源可能是 scoop status 权威结果或本地清单比对。 -->
+                          <span class="tag is-danger" x-show="app.installFailed"
+                                title="安装不完整：apps 目录在但读不到 install.json（安装/更新中断的残骸），建议卸载后重装">安装异常</span>
+                          <span class="tag is-warn" x-show="app.manifestRemoved"
+                                title="current 下没有 manifest.json：清单已从 bucket 移除，或安装本身不完整">清单缺失</span>
+                          <span class="tag is-warn" x-show="app.missingDeps && app.missingDeps.length"
+                                :title="'缺少依赖：' + (app.missingDeps || []).join('、') + '（可执行 scoop install ' + (app.missingDeps || []).join(' ') + '）'">
+                            缺依赖 <span x-text="(app.missingDeps || []).length"></span>
+                          </span>
                         </span>
                         <small x-text="app.description || '暂无描述'"></small>
                       </span>
@@ -1249,6 +1266,36 @@
         </div>
 
         <p class="detail-desc" x-text="installed.detail.app && installed.detail.app.description ? installed.detail.app.description : '暂无描述'"></p>
+
+        <!-- 状态问题：与 scoop status 的 Install failed / Missing Dependencies 对应。
+             没问题时整块不渲染，避免抽屉里出现一块空的「无异常」 -->
+        <div class="detail-block" x-show="installed.hasIssue(installed.detail.app)">
+          <h4>状态问题</h4>
+          <div class="tag-row">
+            <span class="tag is-danger" x-show="installed.detail.app ? installed.detail.app.installFailed : false">安装异常</span>
+            <span class="tag is-warn" x-show="installed.detail.app ? installed.detail.app.manifestRemoved : false">清单缺失</span>
+            <template x-for="dep in (installed.detail.app ? (installed.detail.app.missingDeps || []) : [])" :key="dep">
+              <span class="tag is-warn" x-text="'缺依赖 ' + dep"></span>
+            </template>
+          </div>
+          <!-- 残骸下单开一个动作：scoop uninstall 对它无效（Scoop 认为它"未安装"） -->
+          <div class="detail-actions" x-show="installed.detail.app ? installed.detail.app.installFailed : false">
+            <button type="button" class="btn btn-danger is-small" @click="installed.cleanRemains(installed.detail.app)"
+                    :disabled="installed.busyName === installed.detail.name">
+              <svg class="icon"><use href="#i-trash"></use></svg><span>清理残骸</span>
+            </button>
+          </div>
+          <p class="muted" x-text="installed.repairPlan(installed.detail.app || {}).hint"></p>
+          <template x-for="cmd in installed.repairPlan(installed.detail.app || {}).commands" :key="cmd">
+            <div class="copy-row">
+              <code x-text="cmd"></code>
+              <button type="button" class="icon-btn is-tiny" title="复制" @click="copyText(cmd)">
+                <svg class="icon"><use href="#i-copy"></use></svg>
+              </button>
+            </div>
+          </template>
+          <p class="muted" x-text="installed.healthNote"></p>
+        </div>
 
         <div class="detail-block">
           <h4>安装路径</h4>

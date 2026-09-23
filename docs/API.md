@@ -384,14 +384,34 @@ PUT /api/scoop/path
         "homepage": "https://7-zip.org/",
         "updatedAt": 1730000000000,
         "shims": ["7z", "7za"],
-        "isScoop": false
+        "isScoop": false,
+        "installFailed": false,
+        "manifestRemoved": false,
+        "missingDeps": []
       }
-    ]
+    ],
+    "health": { "source": "scan", "checkedAt": null }
   }
 }
 ```
 
 结果缓存 3 秒；变更类任务（安装 / 卸载 / 更新 / 锁定 / 重置 / bucket 变更）结束后会主动失效。
+
+**状态问题字段**（与 `scoop status` 的对应关系）：
+
+| 字段 | 对应 `scoop status` | 含义 |
+| --- | --- | --- |
+| `installFailed` | `Info = Install failed` | `apps\<name>` 目录在，但 `current\install.json` 读不出来 —— 安装 / 更新中断留下的残骸 |
+| `manifestRemoved` | `Info = Manifest removed` | `current\manifest.json` 缺失（清单已从 bucket 移除，或安装不完整） |
+| `missingDeps` | `Missing Dependencies` | 清单声明的依赖里，没有安装的应用名（与 Scoop 一致：按**应用名**比对，系统里已有同名命令也算缺失） |
+
+判定来源见 `health.source`：
+
+- `scan` —— 按本地 `buckets\<bucket>\bucket\<name>.json` 的 `depends` 与已安装应用名比对，毫秒级；`checkedAt` 为 `null`
+- `status` —— 5 分钟内的 `scoop status` 结果（权威：读的是**当前** bucket 清单），`checkedAt` 为那次结果的时间
+
+> 为什么不能只读 `apps\<app>\current\manifest.json`：那是安装当时的快照。依赖可能是在安装**之后**才加进 bucket 清单的
+> （fastgithub 的 `depends: sudo` 就是如此），只读副本会永远看不到。
 
 ### GET `/api/apps/updates`
 
@@ -408,6 +428,25 @@ PUT /api/scoop/path
   }
 }
 ```
+
+### POST `/api/apps/remains`
+
+清理**安装残骸**（`apps\<name>` 在、`install.json` 读不出来）。返回 202 与任务（`app.clean-remains`）。
+
+这种状态下 `scoop uninstall` 无效 —— Scoop 以 `install.json` 判断"是否安装"，
+于是只打印 `ERROR '<name>' isn't installed.`、什么都不做，而且退出码是 0
+（Scoop 的 `error()` 只打印不退出）。详见 [TROUBLESHOOTING 第 22 节](./TROUBLESHOOTING.md)。
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `name` | string | — | **必填**，应用名 |
+| `purge` | boolean | `true` | 同时删除 `persist\<name>`（与 `scoop uninstall --purge` 一致） |
+
+清理内容：应用目录（含 `current` 与所有版本目录）、该应用留下的 shim
+（按 `shims\*.shim` 里记录的目标路径匹配，不会误伤其它应用）、以及可选的 persist 数据。
+
+**只对残骸生效**：正常安装的应用会以 `INVALID_PARAM` 失败（任务状态 `failed`），
+必须走 `/api/apps/uninstall`，不允许用这条路径绕过 Scoop。
 
 ### POST `/api/apps/status`
 
@@ -898,7 +937,7 @@ interface JobEvent {
 
 **任务类型（`kind`）**
 
-`scoop.install`、`scoop.update`、`scoop.checkup`、`scoop.export`、`scoop.import`、`app.install`、`app.uninstall`、`app.update`、`app.hold`、`app.unhold`、`app.cleanup`、`app.reset`、`app.list`、`app.status`、`bucket.add`、`bucket.remove`、`bucket.update`、`config.set`、`config.remove`、`cache.remove`、`script.run`
+`scoop.install`、`scoop.update`、`scoop.checkup`、`scoop.export`、`scoop.import`、`app.install`、`app.uninstall`、`app.update`、`app.hold`、`app.unhold`、`app.cleanup`、`app.reset`、`app.list`、`app.clean-remains`、`app.status`、`bucket.add`、`bucket.remove`、`bucket.update`、`config.set`、`config.remove`、`cache.remove`、`script.run`
 
 任务已结束时，SSE 只重放历史事件随即发送 `eof`，不会保持长连接。
 

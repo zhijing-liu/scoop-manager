@@ -29,6 +29,7 @@ export type JobKind =
   | 'app.cleanup'
   | 'app.reset'
   | 'app.list'
+  | 'app.clean-remains'
   | 'bucket.add'
   | 'bucket.remove'
   | 'bucket.update'

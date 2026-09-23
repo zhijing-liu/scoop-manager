@@ -21,6 +21,10 @@ export function createInstalled(shell) {
     scope: 'all',
     /** 只看可更新：与「用户 / 全局」正交，因此做成独立开关而不是分段项 */
     onlyUpdatable: false,
+    /** 只看有状态问题的应用（缺依赖 / 安装失败 / 清单缺失） */
+    onlyIssues: false,
+    /** 状态问题的数据来源：{ source: 'status' | 'scan', checkedAt: number | null } */
+    health: { source: 'scan', checkedAt: null },
     sort: 'name',
     /** 「排序」下拉的选项（自绘下拉） */
     sortOptions: [
@@ -58,6 +62,8 @@ export function createInstalled(shell) {
       try {
         const data = await api.get(force ? '/apps?force=1' : '/apps');
         this.items = data.items ?? [];
+        // 缺依赖 / 安装失败等状态随列表一起返回，来源决定提示文案（权威 or 本地比对）
+        this.health = data.health ?? { source: 'scan', checkedAt: null };
         // 选中项按 key 收敛：应用被卸载 / 换了范围后要自动从选中集合里移除
         const alive = new Set(this.items.map((item) => this.selectionKey(item)));
         this.selected = this.selected.filter((key) => alive.has(key));
@@ -83,13 +89,68 @@ export function createInstalled(shell) {
 
     /** 当前筛选条件是否生效（空状态里据此提示可一键清空） */
     get hasActiveFilter() {
-      return Boolean(this.query.trim()) || this.scope !== 'all' || this.onlyUpdatable;
+      return Boolean(this.query.trim()) || this.scope !== 'all' || this.onlyUpdatable || this.onlyIssues;
     },
 
     clearFilters() {
       this.query = '';
       this.scope = 'all';
       this.onlyUpdatable = false;
+      this.onlyIssues = false;
+    },
+
+    // ---------------------------------------------------------------- 状态问题
+
+    /**
+     * 应用是否有状态问题。
+     *
+     * 这三个字段来自 /apps（不是前端自己算的）：
+     *   installFailed   —— 目录在但 install.json 读不出来（= scoop status 的 "Install failed"）
+     *   manifestRemoved —— current 下没有 manifest.json
+     *   missingDeps     —— 依赖里有没装的应用（与 Scoop 一致，按应用名比对）
+     */
+    hasIssue(app) {
+      return Boolean(app && (app.installFailed || app.manifestRemoved || (app.missingDeps?.length ?? 0) > 0));
+    },
+
+    /** 有状态问题的应用数，用于筛选按钮上的计数 */
+    get issueCount() {
+      return this.items.filter((item) => this.hasIssue(item)).length;
+    },
+
+    /** 状态问题的来源说明（放进提示文案，避免用户以为数据一定权威） */
+    get healthNote() {
+      return this.health.source === 'status'
+        ? '来自 scoop status 的权威结果。'
+        : '按本地 bucket 清单比对得出，bucket 未更新时可能滞后；点「检查更新状态」可获得 scoop status 的权威结果。';
+    },
+
+    /**
+     * 修复建议：把应用的状态问题翻译成可复制执行的命令 + 一句人话解释。
+     * @returns {{ commands: string[], hint: string }}
+     */
+    repairPlan(app) {
+      const commands = [];
+      const hints = [];
+      if (app.installFailed) {
+        // 这里刻意不给 `scoop uninstall`：残骸状态下 Scoop 认为它"未安装"，
+        // 该命令只会打印 "ERROR 'xxx' isn't installed." 然后退 0，等于什么都没做。
+        // app.path 是 current 目录，父目录才是 apps\<name>
+        const appDir = String(app.path ?? '').replace(/[\\/]current$/, '');
+        commands.push(`scoop install ${app.name}`);
+        hints.push(
+          '安装不完整：目录在但读不到 install.json。Scoop 因此认为它"未安装"，'
+          + `scoop uninstall 对它无效 —— 请用上面的「清理残骸」（或手动删除 ${appDir}）后再重新安装。`,
+        );
+      }
+      if (app.manifestRemoved) {
+        hints.push('本地读不到该应用的 manifest（清单已从 bucket 移除或安装中断），重新安装前请确认它仍在某个 bucket 中。');
+      }
+      if ((app.missingDeps?.length ?? 0) > 0) {
+        commands.push(`scoop install ${app.missingDeps.join(' ')}`);
+        hints.push(`缺少依赖 ${app.missingDeps.join('、')}：Scoop 按应用名校验，系统里已有同名命令（例如 Windows 自带的 sudo.exe）依然算缺失。`);
+      }
+      return { commands, hint: hints.join(' ') };
     },
 
     get filtered() {
@@ -102,6 +163,10 @@ export function createInstalled(shell) {
       if (this.onlyUpdatable) {
         const updatable = this.updatableNames;
         list = list.filter((item) => updatable.has(item.name));
+      }
+
+      if (this.onlyIssues) {
+        list = list.filter((item) => this.hasIssue(item));
       }
 
       if (keyword) {
@@ -219,15 +284,17 @@ export function createInstalled(shell) {
       const confirmed = await shell.askConfirm({
         title: '批量卸载',
         message: `将卸载选中的 ${names.length} 个应用：${names.slice(0, 8).join('、')}${names.length > 8 ? ' 等' : ''}。`,
-        detail: '卸载后可通过「搜索与安装」重新安装。',
+        detail: '卸载后可通过「搜索与安装」重新安装。持久化数据（persist 目录）会一并删除，不可恢复。',
         confirmText: '卸载',
         danger: true,
       });
       if (!confirmed) return;
       this.batchBusy = true;
       try {
-        // 同 batchUpdate：按范围拆开提交，全局应用需要 -g 才能被命中
-        await shell.submitScopedBatches('/apps/uninstall', entries);
+        // 同 batchUpdate：按范围拆开提交，全局应用需要 -g 才能被命中。
+        // purge 必须显式传：不传的话后端默认 false，批量卸载会残留 persist 数据，
+        // 与单行卸载（固定 -p）行为不一致。
+        await shell.submitScopedBatches('/apps/uninstall', entries, { purge: true });
         this.clearSelection();
       } catch (error) {
         shell.toast(errorMessage(error), 'danger');
@@ -264,10 +331,17 @@ export function createInstalled(shell) {
     },
 
     async uninstall(app) {
+      // 残骸走 scoop uninstall 是无效动作：Scoop 以 install.json 判断"是否安装"，
+      // 残骸读不出 install.json → 它只打印 "ERROR 'xxx' isn't installed."
+      // 然后退 0（什么都不做），提交任务只会得到一条"假成功"。
+      if (app.installFailed) {
+        shell.toast(`${app.name} 是安装残骸，scoop uninstall 处理不了；请用「清理残骸」。`, 'warn', 6000);
+        return;
+      }
       const confirmed = await shell.askConfirm({
         title: `卸载 ${app.name}`,
-        message: `将卸载 ${app.name}${app.version ? ` v${app.version}` : ''}。`,
-        detail: '如果该应用被其他应用依赖，可能导致依赖它的程序无法运行。',
+        message: `将卸载 ${app.name}${app.version ? ` v${app.version}` : ''}，并删除它的持久化数据。`,
+        detail: '如果该应用被其他应用依赖，可能导致依赖它的程序无法运行。持久化数据（persist 目录）会一并删除，不可恢复。',
         confirmText: '卸载',
         danger: true,
       });
@@ -275,6 +349,34 @@ export function createInstalled(shell) {
       this.busyName = app.name;
       try {
         const data = await api.post('/apps/uninstall', { apps: [app.name], global: app.global, purge: true });
+        this.closeDetail();
+        shell.trackJob(data.job);
+      } catch (error) {
+        shell.toast(errorMessage(error), 'danger');
+      } finally {
+        this.busyName = '';
+      }
+    },
+
+    /**
+     * 清理安装残骸。
+     *
+     * 残骸是 Scoop 自身的一处死锁：`scoop status` 按目录遍历认它、
+     * `scoop uninstall` 按 install.json 不认它，于是「卸载」永远无效。
+     * 这里按 Scoop 卸载时相同的方式清理（应用目录 + shim + persist）。
+     */
+    async cleanRemains(app) {
+      const confirmed = await shell.askConfirm({
+        title: `清理安装残骸 ${app.name}`,
+        message: `将删除 ${String(app.path ?? '').replace(/[\\/]current$/, '')}、它留下的 shim 命令，以及 persist 里的用户数据。`,
+        detail: '该应用已是安装残骸（Scoop 无法卸载它，scoop status 里会一直显示 Install failed）。此操作不可恢复。',
+        confirmText: '清理残骸',
+        danger: true,
+      });
+      if (!confirmed) return;
+      this.busyName = app.name;
+      try {
+        const data = await api.post('/apps/remains', { name: app.name, purge: true });
         this.closeDetail();
         shell.trackJob(data.job);
       } catch (error) {

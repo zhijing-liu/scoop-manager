@@ -588,15 +588,77 @@ netstat -ano | findstr <PID>
 
 1. **界面合并了「用户」与「全局」两个目录，而 `scoop list` 默认只列用户目录**。
    界面上带「全局」标签的应用不会出现在 `scoop list` 的输出里，数量差通常正好等于全局应用数。
-2. **残缺目录**：`apps\<name>` 存在但没有 `current` 链接（下载或解压中断留下的）时，
-   界面会把它列出来（版本显示为「未知」），`scoop list` 不会。
+2. **残缺目录**：`apps\<name>` 存在但读不到 `current\install.json`（下载或解压中断留下的）时，
+   界面会把它列出来并打上「**安装异常**」标记（对应 `scoop status` 的 `Install failed`），
+   `scoop list` 不会列出它 —— 处理方式见第 22 节。
 
 **排查步骤**
 
 1. 已安装页点「**原始清单**」执行 `scoop list`，把两边的差异摆在一起看；
-2. 点「重新扫描」强制重读磁盘（绕过目录快照）；
-3. 仍不一致时点概览页「重新同步」，把全部进程内缓存作废后重来；
-4. 若界面多出来的是残缺目录，确认里面确实没有 `current` 后删除 `<SCOOP>\apps\<name>` 即可。
+2. 用「**只看异常**」一键筛出有状态问题的应用（安装异常 / 清单缺失 / 缺依赖）；
+3. 点「重新扫描」强制重读磁盘（绕过目录快照）；
+4. 仍不一致时点概览页「重新同步」，把全部进程内缓存作废后重来；
+5. 若界面多出来的是残缺目录，按第 22 节的步骤清理后重装即可。
 
 > 界面数据走文件系统扫描、`scoop list` 只做对照展示，这个取舍见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
+
+---
+
+## 22. `scoop status` 里的 Install failed / Missing Dependencies
+
+命令行里 `scoop status` 会多出这两列内容，界面把它们做成了应用名旁的标记
+（「安装异常」「缺依赖 N」）与详情抽屉里的修复命令。两者性质完全不同：
+
+### Install failed —— 安装残骸（`scoop uninstall` 对它无效）
+
+**判定**（Scoop 的 `lib/core.ps1`）：
+
+```powershell
+function failed($app, $global) {
+    $hasCurrent = (get_config NO_JUNCTION) -or (Test-Path "$appPath\current")
+    return (Test-Path $appPath) -and !($hasCurrent -and (installed $app $global))
+}
+```
+
+即 `apps\<name>` 目录还在，但 `current` 链接或 `install.json` 已经不成对 ——
+上次安装 / 更新中断留下的残骸。**它不会有版本号，也不参与更新比对。**
+
+**为什么 `scoop uninstall` 处理不了它**：Scoop 的卸载以 `install.json` 判断"是否安装"，
+残骸读不出 `install.json`，于是它只打印 `ERROR '<name>' isn't installed.`、什么都不做。
+更坑的是 Scoop 的 `error()` **只打印不退出**（`abort()` 才会设退出码），
+所以这条命令的**退出码是 0** —— 在只看退出码的工具里会显示成"卸载成功"。
+
+**处理**：已安装页 → 点开该应用详情 → 「状态问题」块里的「**清理残骸**」。
+它按 Scoop 卸载时相同的方式清理：应用目录、该应用留下的 shim、persist 用户数据
+（与 `scoop uninstall --purge` 一致），日志逐条列出删了什么。
+
+这条路径**只对残骸生效**：正常应用会被拒绝并要求走「卸载」，避免绕过 Scoop。
+需要重新安装时再 `scoop install <app>` 即可。
+
+> 手工等价操作：删除 `<SCOOP>\apps\<name>`、
+> `<SCOOP>\shims\<name>.{shim,exe,cmd,ps1}`、`<SCOOP>\persist\<name>`。
+
+> **`scoop` 自身不在判定范围内**：它是 git 克隆安装的（只有 `bin/scoop.ps1`，
+> 没有 `install.json` / `manifest.json`），形式上和残骸一样。
+> `scoop status` 自己也是排除它的（`scoop-status.ps1` 里的 `Where-Object name -NE 'scoop'`），
+> 本程序的扫描同样排除，并且清理残骸接口对 `scoop` 有硬保险 —— 直接拒绝。
+
+### Missing Dependencies —— 缺依赖
+
+判定依据是清单里的 `depends`，且**按「已安装的 Scoop 应用名」比对，不看命令是否存在**：
+系统里已经有 Windows 11 自带的 `C:\WINDOWS\system32\sudo.exe`，`scoop status` 照样报 `sudo` 缺失。
+
+三种处理：
+
+| 方案 | 说明 |
+| --- | --- |
+| **忽略** | 只影响状态显示。例如 fastgithub 只是在改 hosts 时需要提权，工具本身照常运行 |
+| **装上依赖** | `scoop install sudo`。注意 `sudo` 清单来自 psutils（2020 年、每次调用弹 UAC）；本机 PATH 里 `system32` 早于 scoop 的 `shims`，不会顶掉系统原生 sudo |
+| **改清单** | 不推荐：第三方 bucket 的清单会被 `scoop update` 还原 |
+
+装 `gsudo` 之类**不能**消除警告 —— Scoop 认的是名字。
+
+> 依赖为空的常见误解：依赖可能是在应用**安装之后**才加进 bucket 清单的
+> （fastgithub 就是这样），所以界面读的是**当前** bucket 清单，
+> 而不是 `apps\<app>\current\manifest.json` 那份安装快照。
 

@@ -65,6 +65,13 @@ Scoop **没有**通用的 `--json` 开关。`list` / `status` / `search` / `info
 > 直写的 WARN 行），而该表格正是「检查更新状态」唯一的解析来源 —— 后果是它永远解析出
 > 0 项、界面显示"全部最新"。`Out-Default` 在管道内立即渲染，且不影响退出码与增量输出。
 
+> **退出码不能单独作为成功判据**：Scoop 里有两个报错函数 ——
+> `error()` 只 `write-host "ERROR xxx"` 就返回，`abort()` 才会 `exit <code>`。
+> 也就是说 `error()` 路径的失败**退出码是 0**（例如对安装残骸执行 `scoop uninstall`，
+> 只会打印 `ERROR 'xxx' isn't installed.`）。因此 `jobs/execute.ts` 的 `translateResult`
+> 在退出码为 0 时还要检查 stdout 有没有行首 `ERROR ` 的 fatal 行，否则会把"什么都没做"
+> 报成成功。「安装残骸」的完整背景见 [TROUBLESHOOTING 第 22 节](./TROUBLESHOOTING.md)。
+
 ### 这样做的收益与代价
 
 **收益**

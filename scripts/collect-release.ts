@@ -11,6 +11,13 @@
  * Tauri 默认把安装包埋在 target/release/bundle/nsis 里，层级深且与构建中间产物
  * 混在一起；发布时只关心最终产物，因此统一收拢到一处，并顺手给单文件 exe 换成
  * 一眼能看出用途的名字。
+ *
+ * 只收拢**当前版本**的安装包：
+ *   Tauri 不会清理上次构建留下的安装包，于是 bundle 目录里可能同时存在
+ *   `Scoop Manager_1.0.0_x64-setup.exe` 与 `..._1.1.0_...` —— 旧实现把目录里
+ *   所有 .exe 都拷进 release/，等于把历史版本又搬了回来（清空 release/ 也没用），
+ *   而 CI 的产物校验要求"恰好一个安装包"，会直接失败。
+ *   这里按 package.json 的版本号筛选，并把过期产物从 bundle 目录里删掉。
  */
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -35,26 +42,68 @@ function report(target: string): void {
   console.log(`  ${target}  (${size} MB)`);
 }
 
+/**
+ * Tauri 的 NSIS 安装包命名：`<产品名>_<版本>_<架构>-setup.exe`。
+ * 用它把「本次构建的产物」和「上次构建留下的」区分开。
+ */
+const SETUP_PATTERN = /^(?<product>.+)_(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)_(?<arch>[^-]+)-setup\.exe$/i;
+
+interface Classified {
+  current: string[];
+  stale: string[];
+  unknown: string[];
+}
+
+/** 按版本号把 bundle 目录里的安装包分成三堆：本次的、过期的、命名不符合约定的。 */
+function classifyInstallers(names: string[], version: string): Classified {
+  const result: Classified = { current: [], stale: [], unknown: [] };
+  for (const name of names) {
+    const matched = SETUP_PATTERN.exec(name);
+    if (!matched?.groups) {
+      result.unknown.push(name);
+      continue;
+    }
+    if (matched.groups.version === version) result.current.push(name);
+    else result.stale.push(name);
+  }
+  return result;
+}
+
 function main(): void {
   if (!existsSync(BUNDLE_DIR)) {
     console.error(`未找到构建产物目录：${BUNDLE_DIR}\n请先执行：bun run desktop:release（它已包含构建步骤）`);
     process.exit(1);
   }
 
-  const installers = readdirSync(BUNDLE_DIR).filter((name) => name.toLowerCase().endsWith('.exe'));
-  if (installers.length === 0) {
-    console.error(`产物目录中没有找到安装包：${BUNDLE_DIR}`);
+  const version = readVersion();
+  const all = readdirSync(BUNDLE_DIR).filter((name) => name.toLowerCase().endsWith('.exe'));
+  const { current, stale, unknown } = classifyInstallers(all, version);
+
+  if (current.length === 0) {
+    console.error(
+      `产物目录中没有找到 ${version} 的安装包：${BUNDLE_DIR}\n` +
+        `目录内的 .exe：${all.length > 0 ? all.join('、') : '（空）'}\n` +
+        '若是首次构建，请先执行：bun run desktop:release',
+    );
     process.exit(1);
+  }
+
+  // 清掉上次构建留下的安装包：它们既不该被收拢，也不该继续占着磁盘
+  for (const name of stale) {
+    rmSync(join(BUNDLE_DIR, name), { force: true });
+    console.log(`已清理过期产物：${name}`);
+  }
+  if (unknown.length > 0) {
+    console.warn(`  跳过命名不符合 <产品名>_<版本>_<架构>-setup.exe 约定的文件：${unknown.join('、')}`);
   }
 
   // 每次重新收集，避免 release/ 里堆积历史版本导致误发
   rmSync(OUT_DIR, { recursive: true, force: true });
   mkdirSync(OUT_DIR, { recursive: true });
 
-  const version = readVersion();
-  console.log('产物已收拢到 release/');
+  console.log(`产物已收拢到 release/（版本 ${version}）`);
 
-  for (const name of installers) {
+  for (const name of current) {
     const target = join(OUT_DIR, name);
     copyFileSync(join(BUNDLE_DIR, name), target);
     report(target);
